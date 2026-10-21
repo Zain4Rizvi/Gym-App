@@ -65,3 +65,27 @@ def test_duplicate_patch_does_not_keep_the_edit():
     assert get_row(book, "Exercises", second["id"])["canonical_name"] == "Deadlift"
     assert isinstance(book, Book)
     assert book.dirty is True
+
+
+from api.app.storage import upsert_by_date
+
+
+def test_date_upsert_is_partial_and_kg_converts_once():
+    book = empty_book()
+    first = upsert_by_date(book, "Days", "2026-09-22", {"bodyweight_lb": 0, "day_label": "Push"})
+    assert first["bodyweight_lb"] == "0"
+    second = upsert_by_date(book, "Days", "2026-09-22", {"sleep_hours": 7, "day_label": None})
+    assert second["id"] == first["id"]
+    assert second["bodyweight_lb"] == "0"
+    assert second["sleep_hours"] == "7"
+    assert second["day_label"] == ""
+    assert len(book["Days"]) == 1
+
+    lifted = insert_row(book, "Sets", {"weight_lb": 20, "unit_entered": "kg", "set_number": "1"})
+    assert lifted["weight_lb"] == "44.09"
+    assert lifted["unit_entered"] == "kg"
+    patched = patch_row(book, "Sets", lifted["id"], {"reps": "5"})
+    assert patched["weight_lb"] == "44.09"
+    pounds = insert_row(book, "Sets", {"weight_lb": 225, "set_number": "1"})
+    assert pounds["weight_lb"] == "225"
+    assert pounds["unit_entered"] == "lb"

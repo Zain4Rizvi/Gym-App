@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from api.app.schema import (
     BOOL_FIELDS,
     DATE_FIELDS,
+    DATE_TABS,
     DAY_LABELS,
     EXERCISE_STATUSES,
     PARSE_STATUSES,
@@ -15,6 +16,8 @@ from api.app.schema import (
     TABS,
     UNITS,
 )
+
+LB_PER_KG = 2.2046226218
 
 
 class Book(dict):
@@ -90,6 +93,17 @@ def validate_fields(tab: str, fields: dict) -> None:
         raise ValueError(", ".join(bad))
 
 
+def canonicalize_weight(row: dict[str, str], fields: dict) -> None:
+    if "weight_lb" not in fields or fields["weight_lb"] is None or fields["weight_lb"] == "":
+        return
+    unit = fields.get("unit_entered", row.get("unit_entered", ""))
+    if unit == "kg":
+        row["weight_lb"] = f"{round(float(fields['weight_lb']) * LB_PER_KG, 2):.2f}"
+        row["unit_entered"] = "kg"
+    elif unit in ("", "lb"):
+        row["unit_entered"] = "lb"
+
+
 def apply_fields(tab: str, row: dict[str, str], fields: dict) -> None:
     validate_fields(tab, fields)
     allowed = set(TABS[tab]) - {"id", "created_at"}
@@ -97,6 +111,8 @@ def apply_fields(tab: str, row: dict[str, str], fields: dict) -> None:
         if key not in allowed:
             continue
         row[key] = "" if value is None else encode(key, value)
+    if tab == "Sets":
+        canonicalize_weight(row, fields)
 
 
 def duplicate(book: Book, tab: str, row: dict[str, str], ignore_id: str | None = None) -> bool:
@@ -203,3 +219,13 @@ def row_by_date(book: Book, tab: str, date: str) -> dict[str, str]:
     if found is None:
         raise Missing(tab, date)
     return found
+
+
+def upsert_by_date(book: Book, tab: str, date: str, fields: dict) -> dict[str, str]:
+    if tab not in DATE_TABS:
+        raise ValueError(tab)
+    merged = {**fields, "date": date}
+    found = next((row for row in book[tab] if row["date"] == date), None)
+    if found is None:
+        return insert_row(book, tab, merged)
+    return patch_row(book, tab, found["id"], merged)
