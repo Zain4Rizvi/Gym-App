@@ -1,4 +1,20 @@
-from api.app.schema import BOOL_FIELDS, TABS
+import uuid
+from datetime import datetime, timezone
+
+from api.app.schema import (
+    BOOL_FIELDS,
+    DATE_FIELDS,
+    DAY_LABELS,
+    EXERCISE_STATUSES,
+    PARSE_STATUSES,
+    POSES,
+    ROW_TABS,
+    SET_TYPES,
+    SOURCES,
+    TAGS,
+    TABS,
+    UNITS,
+)
 
 
 class Book(dict):
@@ -26,3 +42,164 @@ def encode(field: str, value) -> str:
     if isinstance(value, float):
         return format(value, "g")
     return str(value)
+
+
+class Duplicate(Exception):
+    def __init__(self, tab: str):
+        self.tab = tab
+        super().__init__(tab)
+
+
+class Missing(Exception):
+    def __init__(self, tab: str, row_id: str):
+        self.tab = tab
+        self.row_id = row_id
+        super().__init__(row_id)
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def validate_fields(tab: str, fields: dict) -> None:
+    bad: list[str] = []
+    checks = {
+        "set_type": SET_TYPES,
+        "day_label": DAY_LABELS,
+        "pose": POSES,
+        "source": SOURCES,
+        "parse_status": PARSE_STATUSES,
+        "unit_entered": UNITS,
+    }
+    for key, allowed in checks.items():
+        value = fields.get(key)
+        if value is None or value == "":
+            continue
+        if str(value) not in allowed:
+            bad.append(key)
+    if tab == "Exercises":
+        status = fields.get("status")
+        if status not in (None, "") and str(status) not in EXERCISE_STATUSES:
+            bad.append("status")
+    tags = fields.get("tags")
+    if tags not in (None, ""):
+        parts = [part.strip() for part in str(tags).split(",") if part.strip()]
+        if any(part not in TAGS for part in parts):
+            bad.append("tags")
+    if bad:
+        raise ValueError(", ".join(bad))
+
+
+def apply_fields(tab: str, row: dict[str, str], fields: dict) -> None:
+    validate_fields(tab, fields)
+    allowed = set(TABS[tab]) - {"id", "created_at"}
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        row[key] = "" if value is None else encode(key, value)
+
+
+def duplicate(book: Book, tab: str, row: dict[str, str], ignore_id: str | None = None) -> bool:
+    others = [item for item in book[tab] if item["id"] != ignore_id]
+    if tab in ("Days", "Nutrition"):
+        return row["date"] != "" and any(item["date"] == row["date"] for item in others)
+    if tab == "Supplements":
+        if row["date"] == "" or row["item"] == "":
+            return False
+        return any(
+            item["date"] == row["date"] and item["item"].casefold() == row["item"].casefold()
+            for item in others
+        )
+    if tab == "Aliases":
+        if row["alias"] == "":
+            return False
+        return any(
+            item["alias"].casefold() == row["alias"].casefold() and item["day_label"] == row["day_label"]
+            for item in others
+        )
+    if tab == "Notes":
+        if row["client_request_id"] == "":
+            return False
+        return any(item["client_request_id"] == row["client_request_id"] for item in others)
+    if tab == "Exercises":
+        if row["canonical_name"] == "":
+            return False
+        return any(item["canonical_name"].casefold() == row["canonical_name"].casefold() for item in others)
+    if tab == "SupplementItems":
+        if row["item"] == "":
+            return False
+        return any(item["item"].casefold() == row["item"].casefold() for item in others)
+    return False
+
+
+def insert_row(book: Book, tab: str, fields: dict) -> dict[str, str]:
+    if tab not in ROW_TABS:
+        raise ValueError(tab)
+    request_id = str(fields.get("client_request_id") or "")
+    if tab == "Notes" and request_id:
+        existing = next((row for row in book["Notes"] if row["client_request_id"] == request_id), None)
+        if existing:
+            return existing
+    row = {header: "" for header in TABS[tab]}
+    now = utc_now()
+    row["id"] = str(uuid.uuid4())
+    row["created_at"] = now
+    row["updated_at"] = now
+    row["source"] = "user"
+    apply_fields(tab, row, fields)
+    if tab == "Notes":
+        row["parse_status"] = "pending"
+    if duplicate(book, tab, row):
+        raise Duplicate(tab)
+    book[tab].append(row)
+    book.dirty = True
+    return row
+
+
+def get_row(book: Book, tab: str, row_id: str) -> dict[str, str]:
+    if tab not in TABS:
+        raise ValueError(tab)
+    found = next((row for row in book[tab] if row.get("id") == row_id), None)
+    if found is None:
+        raise Missing(tab, row_id)
+    return found
+
+
+def patch_row(book: Book, tab: str, row_id: str, fields: dict) -> dict[str, str]:
+    if tab not in ROW_TABS:
+        raise ValueError(tab)
+    row = get_row(book, tab, row_id)
+    trial = dict(row)
+    apply_fields(tab, trial, fields)
+    trial["updated_at"] = utc_now()
+    if duplicate(book, tab, trial, ignore_id=row_id):
+        raise Duplicate(tab)
+    row.clear()
+    row.update(trial)
+    book.dirty = True
+    return row
+
+
+def delete_row(book: Book, tab: str, row_id: str) -> None:
+    if tab not in ROW_TABS:
+        raise ValueError(tab)
+    row = get_row(book, tab, row_id)
+    book[tab].remove(row)
+    book.dirty = True
+
+
+def rows_by_field(book: Book, tab: str, field: str, value: str) -> list[dict[str, str]]:
+    return [row for row in book[tab] if row.get(field) == value]
+
+
+def sets_on_date(book: Book, date: str) -> list[dict[str, str]]:
+    session_ids = {row["id"] for row in book["Sessions"] if row["date"] == date}
+    return [row for row in book["Sets"] if row["session_id"] in session_ids]
+
+
+def row_by_date(book: Book, tab: str, date: str) -> dict[str, str]:
+    field = DATE_FIELDS.get(tab, "date")
+    found = next((row for row in book[tab] if row.get(field) == date), None)
+    if found is None:
+        raise Missing(tab, date)
+    return found
