@@ -1,3 +1,4 @@
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -304,3 +305,92 @@ def rebuild_daily_view(book: Book) -> None:
         })
     book["DailyView"] = view
     book.dirty = True
+
+
+def _ensure_tabs(service, spreadsheet_id: str) -> None:
+    meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    existing = {sheet["properties"]["title"] for sheet in meta["sheets"]}
+    missing = [name for name in TABS if name not in existing]
+    if not missing:
+        return
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": [{"addSheet": {"properties": {"title": name}}} for name in missing]},
+    ).execute()
+    for name in missing:
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{name}'!A1",
+            valueInputOption="RAW",
+            body={"values": [TABS[name]]},
+        ).execute()
+
+
+def load_book(service, spreadsheet_id: str) -> Book:
+    _ensure_tabs(service, spreadsheet_id)
+    book = empty_book()
+    for name, headers in TABS.items():
+        result = (
+            service.spreadsheets()
+            .values()
+            .get(spreadsheetId=spreadsheet_id, range=f"'{name}'!A1:ZZ")
+            .execute()
+        )
+        values = result.get("values", [])
+        if not values:
+            book.headers[name] = list(headers)
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{name}'!A1",
+                valueInputOption="RAW",
+                body={"values": [list(headers)]},
+            ).execute()
+            continue
+        sheet_headers = list(values[0])
+        book.headers[name] = sheet_headers
+        width = len(sheet_headers)
+        for raw in values[1:]:
+            padded = list(raw) + [""] * (width - len(raw))
+            by_name = {sheet_headers[index]: padded[index] for index in range(width)}
+            row = {header: by_name.get(header, "") for header in headers}
+            for header, cell in by_name.items():
+                if header not in row:
+                    row[header] = cell
+            if any(cell != "" for cell in row.values()):
+                book[name].append(row)
+    return book
+
+
+def save_book(service, spreadsheet_id: str, book: Book) -> None:
+    # ponytail: full-tab rewrite, per-tab dirty ranges if a save gets slow
+    data = []
+    ranges = []
+    for name, headers in TABS.items():
+        saved = list(book.headers.get(name) or headers)
+        for header in headers:
+            if header not in saved:
+                saved.append(header)
+        values = [saved]
+        for row in book[name]:
+            values.append([row.get(header, "") for header in saved])
+        ranges.append(f"'{name}'!A:ZZ")
+        data.append({"range": f"'{name}'!A1", "values": values})
+    service.spreadsheets().values().batchClear(
+        spreadsheetId=spreadsheet_id,
+        body={"ranges": ranges},
+    ).execute()
+    service.spreadsheets().values().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"valueInputOption": "RAW", "data": data},
+    ).execute()
+
+
+def sheets_service():
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build
+
+    creds = Credentials.from_service_account_file(
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
