@@ -1,12 +1,13 @@
 import os
 import re
 
-from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
 
 from api.app.auth import bearer_token, require_token, token_matches
 from api.app.parse import configured_model, learn_alias, run_parse
-from api.app.schema import DATE_FIELDS, DATE_TABS, PATHS
+from api.app.photos import PhotoPath, resolve_photo, save_photo
+from api.app.schema import DATE_FIELDS, DATE_TABS, PATHS, POSES
 from api.app.storage import (
     SHARED_BOOK_ID,
     Book,
@@ -49,6 +50,7 @@ def get_book(authorization: str | None = Header(default=None)):
             raise HTTPException(status_code=401, detail="unauthorized")
         service = sheets_service()
         book = load_book(service, sheet_id)
+        book.book_id = sheet_id
         try:
             yield book
         finally:
@@ -63,6 +65,7 @@ def get_book(authorization: str | None = Header(default=None)):
             raise HTTPException(status_code=401, detail="unauthorized")
         book_id = account["id"]
     book = load_local_book(book_id)
+    book.book_id = book_id
     try:
         yield book
     finally:
@@ -173,11 +176,45 @@ def mount(router: APIRouter) -> None:
             return Response(status_code=204)
         return row
 
+    @router.post("/media")
+    async def create_media(request: Request, book: Book = Depends(get_book)):
+        if "multipart/form-data" in request.headers.get("content-type", ""):
+            form = await request.form()
+            date = str(form.get("date") or "")
+            pose = str(form.get("pose") or "")
+            upload = form.get("file")
+            if DATE_RE.fullmatch(date) is None:
+                raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+            if pose not in POSES:
+                raise HTTPException(status_code=400, detail="pose")
+            if upload is None or not hasattr(upload, "read"):
+                raise HTTPException(status_code=400, detail="file is required")
+            book_id = getattr(book, "book_id", "")
+            payload = await upload.read()
+            try:
+                uri = save_photo(book_id, payload, getattr(upload, "filename", "") or "")
+            except PhotoPath:
+                raise HTTPException(status_code=400, detail="path")
+            return insert_row(book, "Media", {"date": date, "pose": pose, "storage_uri": uri})
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="json object")
+        return insert_row(book, "Media", body)
+
+    @router.get("/media/{row_id}/file")
+    def media_file(row_id: str, book: Book = Depends(get_book)):
+        row = get_row(book, "Media", row_id)
+        try:
+            path = resolve_photo(getattr(book, "book_id", ""), row.get("storage_uri", ""))
+        except PhotoPath:
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(path)
+
     for tab, path in PATHS.items():
         add_item_routes(router, tab, path)
         if tab in DATE_TABS:
             add_put_by_date(router, tab, path)
-        elif tab != "Notes":
+        elif tab not in {"Notes", "Media"}:
             add_post(router, tab, path)
         add_list(router, tab, path)
 
