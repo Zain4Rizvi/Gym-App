@@ -168,6 +168,7 @@ def insert_row(book: Book, tab: str, fields: dict) -> dict[str, str]:
     if duplicate(book, tab, row):
         raise Duplicate(tab)
     book[tab].append(row)
+    rebuild_daily_view(book)
     book.dirty = True
     return row
 
@@ -192,6 +193,7 @@ def patch_row(book: Book, tab: str, row_id: str, fields: dict) -> dict[str, str]
         raise Duplicate(tab)
     row.clear()
     row.update(trial)
+    rebuild_daily_view(book)
     book.dirty = True
     return row
 
@@ -201,6 +203,7 @@ def delete_row(book: Book, tab: str, row_id: str) -> None:
         raise ValueError(tab)
     row = get_row(book, tab, row_id)
     book[tab].remove(row)
+    rebuild_daily_view(book)
     book.dirty = True
 
 
@@ -229,3 +232,75 @@ def upsert_by_date(book: Book, tab: str, date: str, fields: dict) -> dict[str, s
     if found is None:
         return insert_row(book, tab, merged)
     return patch_row(book, tab, found["id"], merged)
+
+
+def _number(raw: str) -> float:
+    if raw == "":
+        return -1.0
+    return float(raw)
+
+
+def _lift_name(book: Book, row: dict[str, str]) -> str:
+    exercise_id = row.get("exercise_id", "")
+    if exercise_id:
+        for exercise in book["Exercises"]:
+            if exercise["id"] == exercise_id and exercise.get("canonical_name"):
+                return exercise["canonical_name"]
+    return row.get("name_as_written", "")
+
+
+def rebuild_daily_view(book: Book) -> None:
+    dates: set[str] = set()
+    for tab in ("Days", "Sessions", "Nutrition", "Supplements", "ContextNotes", "Media"):
+        for row in book[tab]:
+            if row.get("date"):
+                dates.add(row["date"])
+    view: list[dict[str, str]] = []
+    for date in sorted(dates):
+        day = next((row for row in book["Days"] if row["date"] == date), None)
+        sessions = [row for row in book["Sessions"] if row["date"] == date]
+        labels: list[str] = []
+        for session in sessions:
+            if session.get("label") and session["label"] not in labels:
+                labels.append(session["label"])
+        nutrition = next((row for row in book["Nutrition"] if row["date"] == date), None)
+        session_ids = {session["id"] for session in sessions}
+        grouped: dict[str, list[dict[str, str]]] = {}
+        for row in book["Sets"]:
+            if row["session_id"] not in session_ids or row.get("set_type") == "warmup":
+                continue
+            name = _lift_name(book, row)
+            if name:
+                grouped.setdefault(name, []).append(row)
+        tops: list[str] = []
+        for name in sorted(grouped):
+            best = max(
+                grouped[name],
+                key=lambda item: (_number(item.get("weight_lb", "")), _number(item.get("reps", ""))),
+            )
+            weight = best.get("weight_lb", "")
+            reps = best.get("reps", "")
+            if weight and reps:
+                tops.append(f"{name} {weight}x{reps}")
+            elif weight:
+                tops.append(f"{name} {weight}")
+        context = "; ".join(
+            row["text"] for row in book["ContextNotes"] if row["date"] == date and row.get("text")
+        )
+        supplements = ", ".join(
+            row["item"] for row in book["Supplements"] if row["date"] == date and row.get("item")
+        )
+        view.append({
+            "date": date,
+            "day_label": ", ".join(labels) if labels else (day["day_label"] if day else ""),
+            "bodyweight_lb": day["bodyweight_lb"] if day else "",
+            "sleep_hours": day["sleep_hours"] if day else "",
+            "steps": day["steps"] if day else "",
+            "calories": nutrition["calories"] if nutrition else "",
+            "protein_g": nutrition["protein_g"] if nutrition else "",
+            "top_lifts": "; ".join(tops),
+            "context": context,
+            "supplements": supplements,
+        })
+    book["DailyView"] = view
+    book.dirty = True
