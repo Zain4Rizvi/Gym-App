@@ -99,45 +99,53 @@ def mount(router: APIRouter) -> None:
 
 
 def add_item_routes(router: APIRouter, tab: str, path: str) -> None:
+    sheet = tab
+
     @router.get(f"/{path}/{{key}}", operation_id=f"get_{path}")
-    def read(key: str, book: Book = Depends(get_book), tab: str = tab):
-        if tab in DATE_TABS and DATE_RE.fullmatch(key):
-            return row_by_date(book, tab, key)
-        return get_row(book, tab, key)
+    def read(key: str, book: Book = Depends(get_book)):
+        if sheet in DATE_TABS and DATE_RE.fullmatch(key):
+            return row_by_date(book, sheet, key)
+        return get_row(book, sheet, key)
 
     @router.patch(f"/{path}/{{row_id}}", operation_id=f"patch_{path}")
-    def patch(row_id: str, body: dict = Body(...), book: Book = Depends(get_book), tab: str = tab):
-        return patch_row(book, tab, row_id, body)
+    def patch(row_id: str, body: dict = Body(...), book: Book = Depends(get_book)):
+        return patch_row(book, sheet, row_id, body)
 
     @router.delete(f"/{path}/{{row_id}}", operation_id=f"delete_{path}")
-    def remove(row_id: str, book: Book = Depends(get_book), tab: str = tab):
-        delete_row(book, tab, row_id)
+    def remove(row_id: str, book: Book = Depends(get_book)):
+        delete_row(book, sheet, row_id)
         return Response(status_code=204)
 
 
 def add_put_by_date(router: APIRouter, tab: str, path: str) -> None:
+    sheet = tab
+
     @router.put(f"/{path}/{{date}}", operation_id=f"put_{path}")
-    def put(date: str, body: dict = Body(...), book: Book = Depends(get_book), tab: str = tab):
+    def put(date: str, body: dict = Body(...), book: Book = Depends(get_book)):
         if DATE_RE.fullmatch(date) is None:
             raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
-        return upsert_by_date(book, tab, date, body)
+        return upsert_by_date(book, sheet, date, body)
 
 
 def add_post(router: APIRouter, tab: str, path: str) -> None:
+    sheet = tab
+
     @router.post(f"/{path}", operation_id=f"post_{path}")
-    def create(body: dict = Body(...), book: Book = Depends(get_book), tab: str = tab):
-        return insert_row(book, tab, body)
+    def create(body: dict = Body(...), book: Book = Depends(get_book)):
+        return insert_row(book, sheet, body)
 
 
 def add_list(router: APIRouter, tab: str, path: str) -> None:
+    sheet = tab
+
     @router.get(f"/{path}", operation_id=f"list_{path}")
-    def listing(date: str | None = None, book: Book = Depends(get_book), tab: str = tab):
-        if tab == "Sets" and date is not None:
+    def listing(date: str | None = None, book: Book = Depends(get_book)):
+        if sheet == "Sets" and date is not None:
             return sets_on_date(book, date)
-        field = DATE_FIELDS.get(tab)
+        field = DATE_FIELDS.get(sheet)
         if date is not None and field:
-            return rows_by_field(book, tab, field, date)
-        return list(book[tab])
+            return rows_by_field(book, sheet, field, date)
+        return list(book[sheet])
 
 
 router = APIRouter(dependencies=[Depends(require_token)])

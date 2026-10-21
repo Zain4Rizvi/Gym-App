@@ -139,6 +139,22 @@ def test_every_catalog_tab_roundtrips(api):
     assert client.get("/exercises", headers=HEADER).status_code == 200
 
 
+def test_tab_query_is_ignored_on_generated_routes(api):
+    client, book = api
+    created = client.post(
+        "/exercises?tab=Notes",
+        json={"canonical_name": "Squat", "status": "active", "primary_muscles": "quads"},
+        headers=HEADER,
+    )
+    body = created.json()
+    assert created.status_code == 200
+    assert "canonical_name" in body
+    assert body["canonical_name"] == "Squat"
+    assert "parse_status" not in body
+    assert book["Notes"] == []
+    assert len(book["Exercises"]) == 1
+
+
 def test_app_source_does_not_import_gemini():
     for path in Path("api/app").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
