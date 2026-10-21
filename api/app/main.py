@@ -2,6 +2,7 @@ import os
 import re
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from api.app.auth import bearer_token, require_token, token_matches
@@ -37,6 +38,12 @@ from api.app.storage import (
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def get_model():

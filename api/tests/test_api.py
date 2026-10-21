@@ -269,6 +269,21 @@ def test_full_day_log(api):
     assert client.get(f"/nutrition/{date}", headers=HEADER).json()["fat_g"] == "70"
 
 
+def test_local_expo_web_origin_is_allowed(api):
+    client, _book = api
+    response = client.get("/health", headers={"Origin": "http://localhost:8081"})
+    assert response.headers["access-control-allow-origin"] == "http://localhost:8081"
+    preflight = client.options(
+        "/notes",
+        headers={
+            "Origin": "http://127.0.0.1:8081",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert preflight.headers["access-control-allow-origin"] == "http://127.0.0.1:8081"
+
+
 def test_app_source_does_not_import_gemini():
     for path in Path("api/app").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
