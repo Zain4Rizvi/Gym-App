@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 
 from api.app.auth import require_token
+from api.app.parse import configured_model, learn_alias, run_parse
 from api.app.schema import DATE_FIELDS, DATE_TABS, PATHS
 from api.app.storage import (
     Book,
@@ -27,6 +28,10 @@ from api.app.storage import (
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 app = FastAPI()
+
+
+def get_model():
+    return configured_model()
 
 
 def get_book():
@@ -64,17 +69,29 @@ def health():
 
 def mount(router: APIRouter) -> None:
     @router.post("/notes")
-    def create_note(body: dict = Body(...), book: Book = Depends(get_book)):
+    def create_note(body: dict = Body(...), book: Book = Depends(get_book), model=Depends(get_model)):
         if not str(body.get("client_request_id") or ""):
             raise HTTPException(status_code=400, detail="client_request_id is required")
         note = insert_row(book, "Notes", body)
-        sets = [row for row in book["Sets"] if row["note_id"] == note["id"]]
-        return {"note": note, "sets": sets}
+        if model is None or note["parse_status"] == "done":
+            sets = [row for row in book["Sets"] if row["note_id"] == note["id"]]
+            return {"note": note, "sets": sets}
+        return run_parse(book, note, model, None)
 
     @router.post("/notes/{row_id}/parse")
-    def parse_note(row_id: str, book: Book = Depends(get_book)):
-        get_row(book, "Notes", row_id)
-        raise HTTPException(status_code=503, detail="parser not configured")
+    def parse_note(
+        row_id: str,
+        book: Book = Depends(get_book),
+        model=Depends(get_model),
+        body: dict | None = Body(default=None),
+    ):
+        note = get_row(book, "Notes", row_id)
+        if model is None:
+            raise HTTPException(status_code=503, detail="parser not configured")
+        overwrite = None
+        if isinstance(body, dict) and isinstance(body.get("overwrite_set_ids"), list):
+            overwrite = [str(item) for item in body["overwrite_set_ids"]]
+        return run_parse(book, note, model, overwrite)
 
     @router.post("/daily-view/rebuild")
     def rebuild(book: Book = Depends(get_book)):
@@ -109,7 +126,13 @@ def add_item_routes(router: APIRouter, tab: str, path: str) -> None:
 
     @router.patch(f"/{path}/{{row_id}}", operation_id=f"patch_{path}")
     def patch(row_id: str, body: dict = Body(...), book: Book = Depends(get_book)):
-        return patch_row(book, sheet, row_id, body)
+        assigning = sheet == "Sets" and bool(body.get("exercise_id"))
+        if sheet == "Sets":
+            body = {**body, "edited_by_user": True}
+        row = patch_row(book, sheet, row_id, body)
+        if assigning:
+            learn_alias(book, row)
+        return row
 
     @router.delete(f"/{path}/{{row_id}}", operation_id=f"delete_{path}")
     def remove(row_id: str, book: Book = Depends(get_book)):
