@@ -9,3 +9,10 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Local books, accounts, and photos
+data/
+
+# Expo
+mobile/node_modules
+mobile/.expo

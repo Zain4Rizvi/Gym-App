@@ -1,25 +1,31 @@
 import os
 import re
 
-from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
 
-from api.app.auth import require_token
+from api.app.auth import bearer_token, require_token, token_matches
 from api.app.parse import configured_model, learn_alias, run_parse
 from api.app.schema import DATE_FIELDS, DATE_TABS, PATHS
 from api.app.storage import (
+    SHARED_BOOK_ID,
     Book,
     Duplicate,
     Missing,
+    account_for_token,
     delete_row,
     get_row,
     insert_row,
     load_book,
+    load_local_book,
+    login_account,
     patch_row,
     rebuild_daily_view,
+    register_account,
     row_by_date,
     rows_by_field,
     save_book,
+    save_local_book,
     sets_on_date,
     sheets_service,
     toggle_supplement,
@@ -35,17 +41,33 @@ def get_model():
     return configured_model()
 
 
-def get_book():
+def get_book(authorization: str | None = Header(default=None)):
     sheet_id = os.getenv("SHEET_ID")
-    if not sheet_id:
-        raise HTTPException(status_code=500, detail="SHEET_ID is not set")
-    service = sheets_service()
-    book = load_book(service, sheet_id)
+    token = bearer_token(authorization)
+    if sheet_id:
+        if not token_matches(token, os.environ.get("AUTH_TOKEN", "")):
+            raise HTTPException(status_code=401, detail="unauthorized")
+        service = sheets_service()
+        book = load_book(service, sheet_id)
+        try:
+            yield book
+        finally:
+            if book.dirty:
+                save_book(service, sheet_id, book)
+        return
+    if token_matches(token, os.environ.get("AUTH_TOKEN", "")):
+        book_id = SHARED_BOOK_ID
+    else:
+        account = account_for_token(token)
+        if account is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        book_id = account["id"]
+    book = load_local_book(book_id)
     try:
         yield book
     finally:
         if book.dirty:
-            save_book(service, sheet_id, book)
+            save_local_book(book_id, book)
 
 
 @app.exception_handler(Missing)
@@ -66,6 +88,37 @@ def value_handler(_request, exc: ValueError):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+def _email_and_password(body: dict) -> tuple[str, str]:
+    email = str(body.get("email") or "").strip()
+    password = "" if body.get("password") is None else str(body.get("password"))
+    if email == "" or password == "":
+        raise HTTPException(status_code=400, detail="email and password are required")
+    return email, password
+
+
+@app.post("/accounts")
+def create_account(body: dict = Body(...)):
+    email, password = _email_and_password(body)
+    return register_account(email, password)
+
+
+@app.post("/login")
+def login(body: dict = Body(...)):
+    email, password = _email_and_password(body)
+    found = login_account(email, password)
+    if found is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return found
+
+
+@app.get("/me")
+def me(authorization: str | None = Header(default=None)):
+    account = account_for_token(bearer_token(authorization))
+    if account is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return {"email": account["email"]}
 
 
 def mount(router: APIRouter) -> None:

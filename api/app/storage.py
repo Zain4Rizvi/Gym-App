@@ -1,6 +1,10 @@
+import hashlib
+import json
 import os
+import secrets
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from api.app.schema import (
     BOOL_FIELDS,
@@ -414,6 +418,121 @@ def save_book(service, spreadsheet_id: str, book: Book) -> None:
         spreadsheetId=spreadsheet_id,
         body={"valueInputOption": "RAW", "data": data},
     ).execute()
+
+
+SHARED_BOOK_ID = "shared"
+_PASSWORD_ROUNDS = 100_000
+
+
+def data_dir() -> Path:
+    return Path(os.environ.get("DATA_DIR", "data"))
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(text, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _same(left: str, right: str) -> bool:
+    if left == "" or len(left) != len(right):
+        return False
+    return secrets.compare_digest(left, right)
+
+
+def _accounts_path() -> Path:
+    return data_dir() / "accounts.json"
+
+
+def _book_path(book_id: str) -> Path:
+    if book_id == "" or book_id in {".", ".."} or any(char in book_id for char in "/\\"):
+        raise ValueError("book id")
+    return data_dir() / "books" / f"{book_id}.json"
+
+
+def load_accounts() -> list[dict]:
+    path = _accounts_path()
+    if not path.is_file():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        return []
+    return payload
+
+
+def save_accounts(accounts: list[dict]) -> None:
+    _atomic_write(_accounts_path(), json.dumps(accounts))
+
+
+def _password_hash(password: str, salt: bytes) -> str:
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PASSWORD_ROUNDS).hex()
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def register_account(email: str, password: str) -> dict[str, str]:
+    accounts = load_accounts()
+    if any(item["email"].casefold() == email.casefold() for item in accounts):
+        raise Duplicate("accounts")
+    salt = secrets.token_bytes(16)
+    account = {
+        "id": str(uuid.uuid4()),
+        "email": email,
+        "password_salt": salt.hex(),
+        "password_hash": _password_hash(password, salt),
+        "sessions": [],
+    }
+    token = secrets.token_urlsafe(32)
+    account["sessions"].append(_token_hash(token))
+    accounts.append(account)
+    save_accounts(accounts)
+    return {"token": token, "email": email}
+
+
+def login_account(email: str, password: str) -> dict[str, str] | None:
+    accounts = load_accounts()
+    account = next((item for item in accounts if item["email"].casefold() == email.casefold()), None)
+    if account is None:
+        return None
+    digest = _password_hash(password, bytes.fromhex(account["password_salt"]))
+    if not _same(digest, account["password_hash"]):
+        return None
+    token = secrets.token_urlsafe(32)
+    account["sessions"].append(_token_hash(token))
+    save_accounts(accounts)
+    return {"token": token, "email": account["email"]}
+
+
+def account_for_token(token: str) -> dict | None:
+    if token == "":
+        return None
+    digest = _token_hash(token)
+    for account in load_accounts():
+        for stored in account.get("sessions", []):
+            if _same(stored, digest):
+                return account
+    return None
+
+
+def load_local_book(book_id: str) -> Book:
+    book = empty_book()
+    path = _book_path(book_id)
+    if not path.is_file():
+        return book
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for name in TABS:
+        rows = payload.get(name, [])
+        if isinstance(rows, list):
+            book[name] = rows
+    return book
+
+
+def save_local_book(book_id: str, book: Book) -> None:
+    _atomic_write(_book_path(book_id), json.dumps({name: book[name] for name in TABS}))
+    book.dirty = False
 
 
 def sheets_service():
