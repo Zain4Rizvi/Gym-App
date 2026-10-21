@@ -235,6 +235,37 @@ def upsert_by_date(book: Book, tab: str, date: str, fields: dict) -> dict[str, s
     return patch_row(book, tab, found["id"], merged)
 
 
+def toggle_supplement(book: Book, date: str, item: str) -> dict[str, str] | None:
+    folded = item.casefold()
+    existing = next(
+        (
+            row
+            for row in book["Supplements"]
+            if row["date"] == date and row["item"].casefold() == folded
+        ),
+        None,
+    )
+    if existing is not None:
+        delete_row(book, "Supplements", existing["id"])
+        return None
+    checklist = next(
+        (row for row in book["SupplementItems"] if row["item"].casefold() == folded),
+        None,
+    )
+    if checklist is None:
+        raise Missing("SupplementItems", item)
+    return insert_row(
+        book,
+        "Supplements",
+        {
+            "date": date,
+            "item": checklist["item"],
+            "dose": checklist["default_dose"],
+            "unit": checklist["unit"],
+        },
+    )
+
+
 def _number(raw: str) -> float:
     if raw == "":
         return -1.0

@@ -22,6 +22,7 @@ from api.app.storage import (
     save_book,
     sets_on_date,
     sheets_service,
+    toggle_supplement,
     upsert_by_date,
 )
 
@@ -105,6 +106,19 @@ def mount(router: APIRouter) -> None:
     @router.get("/daily-view/{date}")
     def daily_one(date: str, book: Book = Depends(get_book)):
         return row_by_date(book, "DailyView", date)
+
+    @router.post("/supplements/toggle")
+    def toggle_supplement_log(body: dict = Body(...), book: Book = Depends(get_book)):
+        date = str(body.get("date") or "")
+        item = str(body.get("item") or "").strip()
+        if DATE_RE.fullmatch(date) is None:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        if item == "":
+            raise HTTPException(status_code=400, detail="item is required")
+        row = toggle_supplement(book, date, item)
+        if row is None:
+            return Response(status_code=204)
+        return row
 
     for tab, path in PATHS.items():
         add_item_routes(router, tab, path)

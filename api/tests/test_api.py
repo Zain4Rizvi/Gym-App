@@ -155,6 +155,120 @@ def test_tab_query_is_ignored_on_generated_routes(api):
     assert len(book["Exercises"]) == 1
 
 
+def test_full_day_log(api):
+    client, book = api
+    date = "2026-10-21"
+
+    created = client.put(
+        f"/days/{date}",
+        json={"bodyweight_lb": 180, "sleep_hours": 7.5, "steps": 8000, "summary": "easy day"},
+        headers=HEADER,
+    )
+    assert created.status_code == 200
+    day = created.json()
+    assert day["date"] == date
+    assert day["bodyweight_lb"] == "180"
+    assert day["sleep_hours"] == "7.5"
+    assert day["steps"] == "8000"
+    assert day["summary"] == "easy day"
+
+    corrected = client.put(f"/days/{date}", json={"summary": "still easy"}, headers=HEADER)
+    assert corrected.status_code == 200
+    assert corrected.json()["id"] == day["id"]
+    assert corrected.json()["bodyweight_lb"] == "180"
+    assert corrected.json()["sleep_hours"] == "7.5"
+    assert corrected.json()["steps"] == "8000"
+    assert corrected.json()["summary"] == "still easy"
+    assert len(book["Days"]) == 1
+
+    fed = client.put(
+        f"/nutrition/{date}",
+        json={"calories": 2400, "protein_g": 180, "carbs_g": 220, "fat_g": 70},
+        headers=HEADER,
+    )
+    assert fed.status_code == 200
+    totals = fed.json()
+    assert totals["calories"] == "2400"
+    assert totals["protein_g"] == "180"
+    assert totals["carbs_g"] == "220"
+    assert totals["fat_g"] == "70"
+
+    refed = client.put(f"/nutrition/{date}", json={"protein_g": 185}, headers=HEADER)
+    assert refed.json()["id"] == totals["id"]
+    assert refed.json()["calories"] == "2400"
+    assert refed.json()["protein_g"] == "185"
+    assert refed.json()["carbs_g"] == "220"
+    assert refed.json()["fat_g"] == "70"
+    assert len(book["Nutrition"]) == 1
+    assert "Meals" not in book
+
+    item = client.post(
+        "/supplement-items",
+        json={"item": "Creatine", "default_dose": 5, "unit": "g", "active": True},
+        headers=HEADER,
+    )
+    assert item.status_code == 200
+    assert item.json()["active"] == "TRUE"
+    assert item.json()["default_dose"] == "5"
+
+    on = client.post("/supplements/toggle", json={"date": date, "item": "creatine"}, headers=HEADER)
+    assert on.status_code == 200
+    logged = on.json()
+    assert logged["date"] == date
+    assert logged["item"] == "Creatine"
+    assert logged["dose"] == "5"
+    assert logged["unit"] == "g"
+    assert logged["source"] == "user"
+
+    off = client.post("/supplements/toggle", json={"date": date, "item": "Creatine"}, headers=HEADER)
+    assert off.status_code == 204
+    assert book["Supplements"] == []
+
+    again = client.post("/supplements/toggle", json={"date": date, "item": "Creatine"}, headers=HEADER)
+    assert again.status_code == 200
+    assert again.json()["dose"] == "5"
+    assert len(book["Supplements"]) == 1
+
+    assert client.post(
+        "/supplements/toggle", json={"date": "21-10-2026", "item": "Creatine"}, headers=HEADER
+    ).status_code == 400
+    assert client.post(
+        "/supplements/toggle", json={"date": date, "item": " "}, headers=HEADER
+    ).status_code == 400
+    assert client.post(
+        "/supplements/toggle", json={"date": date, "item": "Fish oil"}, headers=HEADER
+    ).status_code == 404
+
+    note = client.post(
+        "/context-notes",
+        json={"date": date, "text": "slept short", "tags": "sleep"},
+        headers=HEADER,
+    )
+    assert note.status_code == 200
+    assert note.json()["text"] == "slept short"
+    assert note.json()["tags"] == "sleep"
+    assert note.json()["session_id"] == ""
+
+    view = client.get(f"/daily-view/{date}", headers=HEADER)
+    assert view.status_code == 200
+    body = view.json()
+    assert body["bodyweight_lb"] == "180"
+    assert body["sleep_hours"] == "7.5"
+    assert body["steps"] == "8000"
+    assert body["calories"] == "2400"
+    assert body["protein_g"] == "185"
+    assert body["context"] == "slept short"
+    assert body["supplements"] == "Creatine"
+
+    supplements = client.get("/supplements", params={"date": date}, headers=HEADER)
+    assert [row["item"] for row in supplements.json()] == ["Creatine"]
+    notes = client.get("/context-notes", params={"date": date}, headers=HEADER)
+    assert [row["text"] for row in notes.json()] == ["slept short"]
+    saved = client.get(f"/days/{date}", headers=HEADER)
+    assert saved.json()["summary"] == "still easy"
+    assert client.get(f"/nutrition/{date}", headers=HEADER).json()["fat_g"] == "70"
+
+
 def test_app_source_does_not_import_gemini():
     for path in Path("api/app").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
