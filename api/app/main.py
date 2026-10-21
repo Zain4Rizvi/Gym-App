@@ -8,6 +8,7 @@ from api.app.auth import bearer_token, require_token, token_matches
 from api.app.parse import configured_model, learn_alias, run_parse
 from api.app.photos import PhotoPath, resolve_photo, save_photo
 from api.app.schema import DATE_FIELDS, DATE_TABS, PATHS, POSES
+from api.app.trends import build_trends
 from api.app.storage import (
     SHARED_BOOK_ID,
     Book,
@@ -209,6 +210,10 @@ def mount(router: APIRouter) -> None:
         except PhotoPath:
             raise HTTPException(status_code=404, detail="not found")
         return FileResponse(path)
+
+    @router.get("/trends")
+    def read_trends(book: Book = Depends(get_book)):
+        return build_trends(book)
 
     for tab, path in PATHS.items():
         add_item_routes(router, tab, path)
