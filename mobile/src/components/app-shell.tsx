@@ -9,6 +9,7 @@ import { useTheme } from "@/hooks/use-theme";
 const TABS = [
   { href: "/notes", label: "Notes" },
   { href: "/trends", label: "Trends" },
+  { href: "/coach", label: "Coach" },
   { href: "/account", label: "Account" },
 ] as const;
 

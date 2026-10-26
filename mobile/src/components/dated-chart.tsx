@@ -65,17 +65,17 @@ function line(values: (number | null)[], count: number, min: number, max: number
 
 export function DatedChart({
   points,
-  bodyweight,
+  relative,
 }: {
   points: DatedPoint[];
-  bodyweight: (number | null)[];
+  relative: (number | null)[];
 }) {
   const theme = useTheme();
   const count = points.length;
   if (count === 0) return null;
   const [low, high] = bounds(points.map((point) => point.value));
-  const weights = bodyweight.filter((value): value is number => value != null);
-  const weightScale = weights.length > 0 ? bounds(weights) : null;
+  const ratios = relative.filter((value): value is number => value != null);
+  const ratioScale = ratios.length > 0 ? bounds(ratios) : null;
   const labels = marked(count);
   const plotBottom = HEIGHT - BOTTOM;
 
@@ -88,23 +88,23 @@ export function DatedChart({
       <SvgText x={8} y={plotBottom} fill={theme.accent} fontSize={11}>
         {figure(low, 0)}
       </SvgText>
-      {weightScale ? (
+      {ratioScale ? (
         <>
           <SvgText x={WIDTH - 8} y={TOP + 4} fill={theme.textSecondary} fontSize={11} textAnchor="end">
-            {figure(weightScale[1], 0)}
+            {figure(ratioScale[1], 2)}
           </SvgText>
           <SvgText x={WIDTH - 8} y={plotBottom} fill={theme.textSecondary} fontSize={11} textAnchor="end">
-            {figure(weightScale[0], 0)}
+            {figure(ratioScale[0], 2)}
           </SvgText>
         </>
       ) : null}
-      {weightScale
-        ? line(bodyweight, count, weightScale[0], weightScale[1]).map((pointsText) => (
+      {ratioScale
+        ? line(relative, count, ratioScale[0], ratioScale[1]).map((pointsText) => (
             <Polyline
-              key={`body-${pointsText}`}
+              key={`relative-${pointsText}`}
               points={pointsText}
               fill="none"
-              stroke={theme.textSecondary}
+              stroke="#7AA2FF"
               strokeWidth={1.5}
               strokeLinejoin="round"
               strokeLinecap="round"

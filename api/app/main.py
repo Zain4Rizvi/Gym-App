@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from api.app.auth import bearer_token, require_token, token_matches
+from api.app.coach import ask, configured_coach, normalize_messages
 from api.app.demo import ensure_demo, reset_demo
 from api.app.parse import configured_model, learn_alias, run_parse
 from api.app.photos import PhotoPath, resolve_photo, save_photo
@@ -75,6 +76,13 @@ app.add_middleware(
 
 def get_model():
     return configured_model()
+
+
+def _coach_error(exc: RuntimeError) -> str:
+    text = str(exc)
+    if "413" in text or "rate_limit" in text or "Request too large" in text:
+        return "The log is too large for the model right now."
+    return text[:180]
 
 
 def get_book(authorization: str | None = Header(default=None)):
@@ -281,6 +289,18 @@ def mount(router: APIRouter) -> None:
     @router.get("/trends")
     def read_trends(book: Book = Depends(get_book)):
         return build_trends(book)
+
+    @router.post("/coach")
+    def coach(body: dict = Body(...), book: Book = Depends(get_book)):
+        messages = normalize_messages(body.get("messages"))
+        complete = configured_coach()
+        if complete is None:
+            raise HTTPException(status_code=503, detail="coach not configured")
+        try:
+            reply = ask(book, messages, complete)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=_coach_error(exc)) from exc
+        return {"reply": reply}
 
     for tab, path in PATHS.items():
         add_item_routes(router, tab, path)

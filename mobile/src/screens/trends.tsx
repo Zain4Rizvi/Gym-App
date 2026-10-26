@@ -17,20 +17,62 @@ import type { LiftPoint, Trends } from "@/utils/trends";
 
 const SEGMENTS = ["Strength", "Body", "Fuel"] as const;
 
+const POPULAR = [
+  "Bench Press",
+  "Barbell Squat",
+  "Deadlift",
+  "Shoulder Press",
+  "Overhead Press",
+  "Barbell Row",
+  "Pull Up",
+  "Chin Up",
+  "Dip",
+  "Incline Bench Press",
+  "Incline Dumbbell Press",
+  "Dumbbell Bench Press",
+  "Incline Chest Press",
+  "Incline Smith Press",
+  "Lat Pulldown",
+  "Seated Row",
+  "T Bar Row",
+  "Romanian Deadlift",
+  "Leg Press",
+  "Hack Squat",
+  "Front Squat",
+  "Chest Fly",
+  "Lateral Raise",
+  "Rear Delt Fly",
+  "Bicep Curl",
+  "Preacher Curl",
+  "Hammer Curl",
+  "Tricep Pushdown",
+  "Skull Crusher",
+  "Tricep Extension",
+  "Tricep Press",
+  "Shrug",
+  "Leg Curl",
+  "Leg Extension",
+  "Calf Raise",
+  "Back Extension",
+  "Ab Crunch",
+];
+
+const RANK = new Map(POPULAR.map((name, index) => [name.toLowerCase(), index]));
+
 function series(lifts: LiftPoint[], name: string): LiftPoint[] {
   return lifts.filter((row) => row.exercise === name);
 }
 
 function liftNames(lifts: LiftPoint[]): string[] {
-  const latest = new Map<string, string>();
-  for (const row of lifts) {
-    const previous = latest.get(row.exercise);
-    if (!previous || row.date > previous) latest.set(row.exercise, row.date);
-  }
-  return [...latest.keys()].sort((left, right) => {
-    const leftDate = latest.get(left) ?? "";
-    const rightDate = latest.get(right) ?? "";
-    if (leftDate !== rightDate) return leftDate < rightDate ? 1 : -1;
+  const counts = new Map<string, number>();
+  for (const row of lifts) counts.set(row.exercise, (counts.get(row.exercise) ?? 0) + 1);
+  return [...counts.keys()].sort((left, right) => {
+    const leftRank = RANK.get(left.toLowerCase()) ?? POPULAR.length;
+    const rightRank = RANK.get(right.toLowerCase()) ?? POPULAR.length;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    const leftCount = counts.get(left) ?? 0;
+    const rightCount = counts.get(right) ?? 0;
+    if (leftCount !== rightCount) return rightCount - leftCount;
     return left.localeCompare(right);
   });
 }
@@ -150,8 +192,14 @@ function Strength({
     const last = points.at(-1);
     const first = points[0];
     const delta = first && last ? last.epley - first.epley : null;
-    const dayWeight = last ? weightOn(bodyweight, last.date) : null;
-    const ratio = last && dayWeight ? last.epley / dayWeight : null;
+    const weights = points.map((point) => weightOn(bodyweight, point.date));
+    const relative = points.map((point, index) => {
+      const weight = weights[index];
+      return weight ? point.epley / weight : null;
+    });
+    const firstRatio = relative.find((value) => value != null) ?? null;
+    const lastRatio = [...relative].reverse().find((value) => value != null) ?? null;
+    const relativeDelta = firstRatio != null && lastRatio != null ? lastRatio - firstRatio : null;
     return (
       <View style={{ gap: Spacing.three }}>
         <Pressable accessibilityRole="button" onPress={() => onOpen(null)} style={webCursor}>
@@ -168,9 +216,10 @@ function Strength({
               {signed(delta)} since {shortDate(first.date)}
             </ThemedText>
           ) : null}
-          {ratio != null ? (
-            <ThemedText selectable themeColor="textSecondary" style={{ fontVariant: ["tabular-nums"] }}>
-              {figure(ratio, 2)} per lb of bodyweight
+          {lastRatio != null ? (
+            <ThemedText selectable style={{ fontVariant: ["tabular-nums"] }}>
+              {figure(lastRatio, 2)} per lb
+              {relativeDelta != null ? `  ${signed(relativeDelta, 2)}` : ""}
             </ThemedText>
           ) : null}
         </View>
@@ -178,13 +227,15 @@ function Strength({
           <ThemedText type="small" style={{ color: theme.accent }}>
             1RM
           </ThemedText>
-          <ThemedText type="small" themeColor="textSecondary">
-            Body, lb
-          </ThemedText>
+          {lastRatio != null ? (
+            <ThemedText type="small" style={{ color: "#7AA2FF" }}>
+              per lb
+            </ThemedText>
+          ) : null}
         </View>
         <DatedChart
           points={points.map((point) => ({ date: point.date, value: point.epley }))}
-          bodyweight={points.map((point) => weightOn(bodyweight, point.date))}
+          relative={relative}
         />
       </View>
     );
