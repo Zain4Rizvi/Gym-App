@@ -405,20 +405,3 @@ def run_parse(book, note: dict, model, overwrite_set_ids: list | None) -> dict:
         "parsed_json": dumped,
     })
     return _result(book, note, [])
-
-
-def learn_alias(book, set_row: dict) -> None:
-    name = set_row.get("name_as_written", "").strip()
-    exercise_id = set_row.get("exercise_id", "")
-    if not name or not exercise_id:
-        return
-    note = next((row for row in book["Notes"] if row["id"] == set_row.get("note_id")), None)
-    day = note["day_label"] if note else ""
-    if any(row["alias"].casefold() == name.casefold() and row["day_label"] == day for row in book["Aliases"]):
-        return
-    insert_row(book, "Aliases", {
-        "alias": name,
-        "exercise_id": exercise_id,
-        "day_label": day,
-        "source": "user",
-    })

@@ -1,4 +1,3 @@
-import os
 import uuid
 from datetime import date
 from pathlib import Path
@@ -12,7 +11,6 @@ from api.app.storage import (
     apply_fields,
     load_accounts,
     load_local_book,
-    rebuild_daily_view,
     register_account,
     save_accounts,
     save_local_book,
@@ -58,8 +56,6 @@ def _imported(book_id: str) -> bool:
 
 
 def ensure_demo(today: date | None = None) -> None:
-    if os.getenv("SHEET_ID"):
-        return
     account = _ensure_account()
     if _imported(account["id"]):
         return
@@ -67,8 +63,6 @@ def ensure_demo(today: date | None = None) -> None:
 
 
 def reset_demo(token: str, today: date | None = None) -> bool:
-    if os.getenv("SHEET_ID"):
-        return False
     account = account_for_token(token)
     if account is None or account.get("email", "").casefold() != DEMO_EMAIL:
         return False
@@ -113,7 +107,6 @@ def _row(book: Book, tab: str, fields: dict) -> dict[str, str]:
 def _book_from_log(text: str) -> Book:
     book = Book()
     ids: dict[str, str] = {}
-    seen_days: set[str] = set()
     for index, session in enumerate(parse_log(text)):
         note = _row(book, "Notes", {
             "session_date": session["date"],
@@ -148,9 +141,6 @@ def _book_from_log(text: str) -> Book:
                     fields["weight_lb"] = item["weight"]
                     fields["unit_entered"] = "lb"
                 _row(book, "Sets", fields)
-        if session["date"] not in seen_days:
-            _row(book, "Days", {"date": session["date"], "day_label": session["label"]})
-            seen_days.add(session["date"])
     known = {name for _alias, name in ALIASES}
     counts: dict[str, int] = {}
     for row in book["Sets"]:
@@ -163,5 +153,4 @@ def _book_from_log(text: str) -> Book:
     if drop:
         book["Exercises"] = [row for row in book["Exercises"] if row["id"] not in drop]
         book["Sets"] = [row for row in book["Sets"] if row["exercise_id"] not in drop]
-    rebuild_daily_view(book)
     return book

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from api.app.main import app, get_book, get_model
 from api.app.parse import configured_model, gemini_complete, groq_complete, plan_sets
-from api.app.storage import empty_book
+from api.app.storage import empty_book, insert_row, patch_row
 
 HEADER = {"Authorization": "Bearer test-token"}
 FIELDS = ("name_as_written", "set_number", "weight_lb", "reps", "unit_entered", "needs_review")
@@ -23,10 +23,8 @@ def pairs(sets):
 
 
 @pytest.fixture
-def api(monkeypatch):
-    monkeypatch.setenv("AUTH_TOKEN", "test-token")
+def api(monkeypatch, pin):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("SHEET_ID", raising=False)
 
     def explode(*_args, **_kwargs):
         raise AssertionError("live Gemini call")
@@ -43,17 +41,11 @@ def api(monkeypatch):
     app.dependency_overrides.clear()
 
 
-def seed(client, *names):
-    ids = {}
-    for name in names:
-        response = client.post(
-            "/exercises",
-            json={"canonical_name": name, "status": "active"},
-            headers=HEADER,
-        )
-        assert response.status_code == 200
-        ids[name] = response.json()["id"]
-    return ids
+def seed(book, *names):
+    return {
+        name: insert_row(book, "Exercises", {"canonical_name": name, "status": "active"})["id"]
+        for name in names
+    }
 
 
 def post_note(client, **fields):
@@ -95,7 +87,7 @@ def test_oct_10_push_parses_to_one_session(api):
         }
 
     app.dependency_overrides[get_model] = lambda: fake
-    seed(client, "Incline dumbell", "Shoulder press", "Pushdown")
+    seed(book, "Incline dumbell", "Shoulder press", "Pushdown")
     raw = note_text("2026-10-10-push.txt")
     body = post_note(
         client,
@@ -140,7 +132,7 @@ def test_oct_10_push_parses_to_one_session(api):
 
 def test_oct_15_legs_parses_on_the_parse_route(api):
     client, book = api
-    seed(client, "Lat raise", "Leg curl", "Squat", "Rdl", "Calf raise", "Leg extension")
+    seed(book, "Lat raise", "Leg curl", "Squat", "Rdl", "Calf raise", "Leg extension")
     raw = note_text("2026-10-15-legs.txt")
     created = post_note(
         client,
@@ -211,7 +203,7 @@ def test_oct_15_legs_parses_on_the_parse_route(api):
 
 def test_uncertain_tokens_stay_empty_and_flagged(api):
     client, book = api
-    seed(client, "Lat raise machine", "Pushdown", "Skull crusher", "Preacher", "Incline dumbell")
+    seed(book, "Lat raise machine", "Pushdown", "Skull crusher", "Preacher", "Incline dumbell")
     raw = "\n".join([
         "Lat raise machine",
         "Pushdown 80 ish, 80 ish",
@@ -278,8 +270,8 @@ def test_uncertain_tokens_stay_empty_and_flagged(api):
 
 
 def test_kg_zero_rpe_and_amrap(api):
-    client, _book = api
-    seed(client, "Squat", "Curl")
+    client, book = api
+    seed(book, "Squat", "Curl")
 
     def fake(_info):
         return {
@@ -313,16 +305,11 @@ def test_kg_zero_rpe_and_amrap(api):
 
 def test_day_scoped_alias_beats_a_blank_alias(api):
     client, book = api
-    press = seed(client, "Incline Press")["Incline Press"]
-    curl = seed(client, "Incline Curl")["Incline Curl"]
-    other = seed(client, "Other Press")["Other Press"]
+    press = seed(book, "Incline Press")["Incline Press"]
+    curl = seed(book, "Incline Curl")["Incline Curl"]
+    other = seed(book, "Other Press")["Other Press"]
     for exercise_id, day in ((other, ""), (press, "Push"), (curl, "Pull")):
-        created = client.post(
-            "/aliases",
-            json={"alias": "Incline dumbell", "exercise_id": exercise_id, "day_label": day},
-            headers=HEADER,
-        )
-        assert created.status_code == 200
+        insert_row(book, "Aliases", {"alias": "Incline dumbell", "exercise_id": exercise_id, "day_label": day})
 
     def fake(_info):
         return {"exercises": [{"name_as_written": "Incline dumbell", "sets": [{"weight": "40", "reps": "10"}]}]}
@@ -350,7 +337,7 @@ def test_day_scoped_alias_beats_a_blank_alias(api):
 
 def test_reparse_keeps_a_user_edit_until_overwrite(api):
     client, book = api
-    seed(client, "Bench")
+    seed(book, "Bench")
     calls = {"n": 0}
 
     def fake(_info):
@@ -369,10 +356,9 @@ def test_reparse_keeps_a_user_edit_until_overwrite(api):
         day_label="Push",
     )
     set_id = created["sets"][0]["id"]
-    patched = client.patch(f"/sets/{set_id}", json={"weight_lb": 110}, headers=HEADER)
-    assert patched.status_code == 200
-    assert patched.json()["weight_lb"] == "110"
-    assert patched.json()["edited_by_user"] == "TRUE"
+    patched = patch_row(book, "Sets", set_id, {"weight_lb": 110, "edited_by_user": True})
+    assert patched["weight_lb"] == "110"
+    assert patched["edited_by_user"] == "TRUE"
     assert book["Aliases"] == []
     saved = created["note"]["parsed_json"]
     conflicted = client.post(f"/notes/{created['note']['id']}/parse", headers=HEADER)
@@ -392,34 +378,6 @@ def test_reparse_keeps_a_user_edit_until_overwrite(api):
     assert replaced.json()["sets"][0]["weight_lb"] == "100"
     assert replaced.json()["sets"][0]["edited_by_user"] == "FALSE"
     assert replaced.json()["sets"][0]["source"] == "gemini"
-
-
-def test_assigning_an_exercise_learns_a_day_scoped_alias(api):
-    client, book = api
-
-    def fake(_info):
-        return {"exercises": [{"name_as_written": "Pusjdown", "sets": [{"weight": "95", "reps": "6"}]}]}
-
-    app.dependency_overrides[get_model] = lambda: fake
-    created = post_note(
-        client,
-        client_request_id="learn",
-        raw_text="Pusjdown 95 x 6",
-        session_date="2026-10-20",
-        day_label="Push",
-    )
-    pushdown = seed(client, "Pushdown")["Pushdown"]
-    set_id = created["sets"][0]["id"]
-    assigned = client.patch(f"/sets/{set_id}", json={"exercise_id": pushdown}, headers=HEADER)
-    assert assigned.status_code == 200
-    assert assigned.json()["edited_by_user"] == "TRUE"
-    alias = book["Aliases"][0]
-    assert alias["alias"] == "Pusjdown"
-    assert alias["exercise_id"] == pushdown
-    assert alias["day_label"] == "Push"
-    weighed = client.patch(f"/sets/{set_id}", json={"weight_lb": 100}, headers=HEADER)
-    assert weighed.status_code == 200
-    assert len(book["Aliases"]) == 1
 
 
 def test_model_failure_keeps_the_typed_note(api):

@@ -12,9 +12,7 @@ HEADER = {"Authorization": "Bearer test-token"}
 
 
 @pytest.fixture
-def api(monkeypatch):
-    monkeypatch.setenv("AUTH_TOKEN", "test-token")
-    monkeypatch.delenv("SHEET_ID", raising=False)
+def api(pin):
     book = empty_book()
 
     def override():
@@ -47,8 +45,6 @@ def test_coach_sends_the_log_and_skips_photos(api, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.delenv("GROQ_MODEL", raising=False)
     book["Sets"].append({"id": "set-1", "name_as_written": "Bench Press", "weight_lb": "225", "reps": "5"})
-    book["Nutrition"].append({"date": "2026-10-25", "calories": "2400", "protein_g": "180"})
-    book["Media"].append({"id": "photo-1", "pose": "front", "storage_uri": "data/photos/secret.jpg"})
     seen = {}
 
     class Response:
@@ -78,7 +74,6 @@ def test_coach_sends_the_log_and_skips_photos(api, monkeypatch):
     system = seen["body"]["messages"][0]["content"]
     assert "Bench Press" in system
     assert "225" in system
-    assert "180" in system
     assert "secret.jpg" not in system
     assert "storage_uri" not in system
     assert "response_format" not in seen["body"]

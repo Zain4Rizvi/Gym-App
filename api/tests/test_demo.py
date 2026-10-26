@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from api.app.demo import DEMO_EMAIL, DEMO_PASSWORD, build_demo_book
 from api.app.logparse import parse_log
 from api.app.main import app
+from api.app.storage import register_account
 from api.app.trends import build_trends
 
 
@@ -55,8 +56,6 @@ def test_imported_book_uses_the_real_log():
 
 def test_reset_restores_the_seed_and_startup_keeps_a_typed_note(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("SHEET_ID", raising=False)
-    monkeypatch.delenv("AUTH_TOKEN", raising=False)
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         logged = client.post("/login", json={"email": DEMO_EMAIL, "password": DEMO_PASSWORD})
@@ -84,10 +83,10 @@ def test_reset_restores_the_seed_and_startup_keeps_a_typed_note(monkeypatch, tmp
         assert len(notes) > 100
         assert all(row["raw_text"] != "Bench 225x5" for row in notes)
         assert notes[0]["client_request_id"].startswith("lifts-txt-")
-        other = client.post("/accounts", json={"email": "ada@example.com", "password": "secret"})
+        other = register_account("ada@example.com", "secret")
         denied = client.post(
             "/demo/reset",
-            headers={"Authorization": f"Bearer {other.json()['token']}"},
+            headers={"Authorization": f"Bearer {other['token']}"},
         )
         assert denied.status_code == 404
     app.dependency_overrides.clear()

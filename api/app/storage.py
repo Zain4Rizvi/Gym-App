@@ -8,16 +8,11 @@ from pathlib import Path
 
 from api.app.schema import (
     BOOL_FIELDS,
-    DATE_FIELDS,
-    DATE_TABS,
     DAY_LABELS,
     EXERCISE_STATUSES,
     PARSE_STATUSES,
-    POSES,
-    ROW_TABS,
     SET_TYPES,
     SOURCES,
-    TAGS,
     TABS,
     UNITS,
 )
@@ -34,13 +29,13 @@ DEFAULT_SPLIT = {
     "Sat": "Legs",
     "Sun": "",
 }
+_PASSWORD_ROUNDS = 100_000
 
 
 class Book(dict):
     def __init__(self):
         super().__init__((name, []) for name in TABS)
         self.dirty = False
-        self.headers: dict[str, list[str]] = {}
 
 
 def empty_book() -> Book:
@@ -85,7 +80,6 @@ def validate_fields(tab: str, fields: dict) -> None:
     checks = {
         "set_type": SET_TYPES,
         "day_label": DAY_LABELS,
-        "pose": POSES,
         "source": SOURCES,
         "parse_status": PARSE_STATUSES,
         "unit_entered": UNITS,
@@ -100,11 +94,6 @@ def validate_fields(tab: str, fields: dict) -> None:
         status = fields.get("status")
         if status not in (None, "") and str(status) not in EXERCISE_STATUSES:
             bad.append("status")
-    tags = fields.get("tags")
-    if tags not in (None, ""):
-        parts = [part.strip() for part in str(tags).split(",") if part.strip()]
-        if any(part not in TAGS for part in parts):
-            bad.append("tags")
     if bad:
         raise ValueError(", ".join(bad))
 
@@ -133,15 +122,6 @@ def apply_fields(tab: str, row: dict[str, str], fields: dict) -> None:
 
 def duplicate(book: Book, tab: str, row: dict[str, str], ignore_id: str | None = None) -> bool:
     others = [item for item in book[tab] if item["id"] != ignore_id]
-    if tab in ("Days", "Nutrition"):
-        return row["date"] != "" and any(item["date"] == row["date"] for item in others)
-    if tab == "Supplements":
-        if row["date"] == "" or row["item"] == "":
-            return False
-        return any(
-            item["date"] == row["date"] and item["item"].casefold() == row["item"].casefold()
-            for item in others
-        )
     if tab == "Aliases":
         if row["alias"] == "":
             return False
@@ -157,15 +137,11 @@ def duplicate(book: Book, tab: str, row: dict[str, str], ignore_id: str | None =
         if row["canonical_name"] == "":
             return False
         return any(item["canonical_name"].casefold() == row["canonical_name"].casefold() for item in others)
-    if tab == "SupplementItems":
-        if row["item"] == "":
-            return False
-        return any(item["item"].casefold() == row["item"].casefold() for item in others)
     return False
 
 
 def insert_row(book: Book, tab: str, fields: dict) -> dict[str, str]:
-    if tab not in ROW_TABS:
+    if tab not in TABS:
         raise ValueError(tab)
     request_id = str(fields.get("client_request_id") or "")
     if tab == "Notes" and request_id:
@@ -184,7 +160,6 @@ def insert_row(book: Book, tab: str, fields: dict) -> dict[str, str]:
     if duplicate(book, tab, row):
         raise Duplicate(tab)
     book[tab].append(row)
-    rebuild_daily_view(book)
     book.dirty = True
     return row
 
@@ -199,7 +174,7 @@ def get_row(book: Book, tab: str, row_id: str) -> dict[str, str]:
 
 
 def patch_row(book: Book, tab: str, row_id: str, fields: dict) -> dict[str, str]:
-    if tab not in ROW_TABS:
+    if tab not in TABS:
         raise ValueError(tab)
     row = get_row(book, tab, row_id)
     trial = dict(row)
@@ -209,230 +184,16 @@ def patch_row(book: Book, tab: str, row_id: str, fields: dict) -> dict[str, str]
         raise Duplicate(tab)
     row.clear()
     row.update(trial)
-    rebuild_daily_view(book)
     book.dirty = True
     return row
 
 
 def delete_row(book: Book, tab: str, row_id: str) -> None:
-    if tab not in ROW_TABS:
+    if tab not in TABS:
         raise ValueError(tab)
     row = get_row(book, tab, row_id)
     book[tab].remove(row)
-    rebuild_daily_view(book)
     book.dirty = True
-
-
-def rows_by_field(book: Book, tab: str, field: str, value: str) -> list[dict[str, str]]:
-    return [row for row in book[tab] if row.get(field) == value]
-
-
-def sets_on_date(book: Book, date: str) -> list[dict[str, str]]:
-    session_ids = {row["id"] for row in book["Sessions"] if row["date"] == date}
-    return [row for row in book["Sets"] if row["session_id"] in session_ids]
-
-
-def row_by_date(book: Book, tab: str, date: str) -> dict[str, str]:
-    field = DATE_FIELDS.get(tab, "date")
-    found = next((row for row in book[tab] if row.get(field) == date), None)
-    if found is None:
-        raise Missing(tab, date)
-    return found
-
-
-def upsert_by_date(book: Book, tab: str, date: str, fields: dict) -> dict[str, str]:
-    if tab not in DATE_TABS:
-        raise ValueError(tab)
-    merged = {**fields, "date": date}
-    found = next((row for row in book[tab] if row["date"] == date), None)
-    if found is None:
-        return insert_row(book, tab, merged)
-    return patch_row(book, tab, found["id"], merged)
-
-
-def toggle_supplement(book: Book, date: str, item: str) -> dict[str, str] | None:
-    folded = item.casefold()
-    existing = next(
-        (
-            row
-            for row in book["Supplements"]
-            if row["date"] == date and row["item"].casefold() == folded
-        ),
-        None,
-    )
-    if existing is not None:
-        delete_row(book, "Supplements", existing["id"])
-        return None
-    checklist = next(
-        (row for row in book["SupplementItems"] if row["item"].casefold() == folded),
-        None,
-    )
-    if checklist is None:
-        raise Missing("SupplementItems", item)
-    return insert_row(
-        book,
-        "Supplements",
-        {
-            "date": date,
-            "item": checklist["item"],
-            "dose": checklist["default_dose"],
-            "unit": checklist["unit"],
-        },
-    )
-
-
-def _number(raw: str) -> float:
-    if raw == "":
-        return -1.0
-    return float(raw)
-
-
-def _lift_name(book: Book, row: dict[str, str]) -> str:
-    exercise_id = row.get("exercise_id", "")
-    if exercise_id:
-        for exercise in book["Exercises"]:
-            if exercise["id"] == exercise_id and exercise.get("canonical_name"):
-                return exercise["canonical_name"]
-    return row.get("name_as_written", "")
-
-
-def rebuild_daily_view(book: Book) -> None:
-    dates: set[str] = set()
-    for tab in ("Days", "Sessions", "Nutrition", "Supplements", "ContextNotes", "Media"):
-        for row in book[tab]:
-            if row.get("date"):
-                dates.add(row["date"])
-    view: list[dict[str, str]] = []
-    for date in sorted(dates):
-        day = next((row for row in book["Days"] if row["date"] == date), None)
-        sessions = [row for row in book["Sessions"] if row["date"] == date]
-        labels: list[str] = []
-        for session in sessions:
-            if session.get("label") and session["label"] not in labels:
-                labels.append(session["label"])
-        nutrition = next((row for row in book["Nutrition"] if row["date"] == date), None)
-        session_ids = {session["id"] for session in sessions}
-        grouped: dict[str, list[dict[str, str]]] = {}
-        for row in book["Sets"]:
-            if row["session_id"] not in session_ids or row.get("set_type") == "warmup":
-                continue
-            name = _lift_name(book, row)
-            if name:
-                grouped.setdefault(name, []).append(row)
-        tops: list[str] = []
-        for name in sorted(grouped):
-            best = max(
-                grouped[name],
-                key=lambda item: (_number(item.get("weight_lb", "")), _number(item.get("reps", ""))),
-            )
-            weight = best.get("weight_lb", "")
-            reps = best.get("reps", "")
-            if weight and reps:
-                tops.append(f"{name} {weight}x{reps}")
-            elif weight:
-                tops.append(f"{name} {weight}")
-        context = "; ".join(
-            row["text"] for row in book["ContextNotes"] if row["date"] == date and row.get("text")
-        )
-        supplements = ", ".join(
-            row["item"] for row in book["Supplements"] if row["date"] == date and row.get("item")
-        )
-        view.append({
-            "date": date,
-            "day_label": ", ".join(labels) if labels else (day["day_label"] if day else ""),
-            "bodyweight_lb": day["bodyweight_lb"] if day else "",
-            "sleep_hours": day["sleep_hours"] if day else "",
-            "steps": day["steps"] if day else "",
-            "calories": nutrition["calories"] if nutrition else "",
-            "protein_g": nutrition["protein_g"] if nutrition else "",
-            "top_lifts": "; ".join(tops),
-            "context": context,
-            "supplements": supplements,
-        })
-    book["DailyView"] = view
-    book.dirty = True
-
-
-def _ensure_tabs(service, spreadsheet_id: str) -> None:
-    meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    existing = {sheet["properties"]["title"] for sheet in meta["sheets"]}
-    missing = [name for name in TABS if name not in existing]
-    if not missing:
-        return
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"requests": [{"addSheet": {"properties": {"title": name}}} for name in missing]},
-    ).execute()
-    for name in missing:
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=f"'{name}'!A1",
-            valueInputOption="RAW",
-            body={"values": [TABS[name]]},
-        ).execute()
-
-
-def load_book(service, spreadsheet_id: str) -> Book:
-    _ensure_tabs(service, spreadsheet_id)
-    book = empty_book()
-    for name, headers in TABS.items():
-        result = (
-            service.spreadsheets()
-            .values()
-            .get(spreadsheetId=spreadsheet_id, range=f"'{name}'!A1:ZZ")
-            .execute()
-        )
-        values = result.get("values", [])
-        if not values:
-            book.headers[name] = list(headers)
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=f"'{name}'!A1",
-                valueInputOption="RAW",
-                body={"values": [list(headers)]},
-            ).execute()
-            continue
-        sheet_headers = list(values[0])
-        book.headers[name] = sheet_headers
-        width = len(sheet_headers)
-        for raw in values[1:]:
-            padded = list(raw) + [""] * (width - len(raw))
-            by_name = {sheet_headers[index]: padded[index] for index in range(width)}
-            row = {header: by_name.get(header, "") for header in headers}
-            for header, cell in by_name.items():
-                if header not in row:
-                    row[header] = cell
-            if any(cell != "" for cell in row.values()):
-                book[name].append(row)
-    return book
-
-
-def save_book(service, spreadsheet_id: str, book: Book) -> None:
-    # ponytail: full-tab rewrite, per-tab dirty ranges if a save gets slow
-    data = []
-    ranges = []
-    for name, headers in TABS.items():
-        saved = list(book.headers.get(name) or headers)
-        for header in headers:
-            if header not in saved:
-                saved.append(header)
-        values = [saved]
-        for row in book[name]:
-            values.append([row.get(header, "") for header in saved])
-        ranges.append(f"'{name}'!A:ZZ")
-        data.append({"range": f"'{name}'!A1", "values": values})
-    service.spreadsheets().values().batchClear(
-        spreadsheetId=spreadsheet_id,
-        body={"ranges": ranges},
-    ).execute()
-    service.spreadsheets().values().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"valueInputOption": "RAW", "data": data},
-    ).execute()
-
-
-SHARED_BOOK_ID = "shared"
-_PASSWORD_ROUNDS = 100_000
 
 
 def data_dir() -> Path:
@@ -614,6 +375,8 @@ def load_local_book(book_id: str) -> Book:
     if not path.is_file():
         return book
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return book
     for name in TABS:
         rows = payload.get(name, [])
         if isinstance(rows, list):
@@ -624,14 +387,3 @@ def load_local_book(book_id: str) -> Book:
 def save_local_book(book_id: str, book: Book) -> None:
     _atomic_write(_book_path(book_id), json.dumps({name: book[name] for name in TABS}))
     book.dirty = False
-
-
-def sheets_service():
-    from google.oauth2.service_account import Credentials
-    from googleapiclient.discovery import build
-
-    creds = Credentials.from_service_account_file(
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"],
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
