@@ -3,7 +3,7 @@
 One local log for lift notes, a daily check-in, physique photos, and trends. The API stores each account in `data/` on this machine. The Expo app in `mobile/` is the phone app and the website.
 
 ```powershell
-uv run uvicorn api.app.main:app --host 0.0.0.0 --port 8000
+uv run uvicorn api.app.main:app --host 0.0.0.0 --port 9477
 ```
 
 ```powershell
@@ -11,7 +11,7 @@ cd mobile
 npx expo start
 ```
 
-Press `w` for the website. A phone on the same Wi-Fi needs `EXPO_PUBLIC_API_URL` set to this PC's LAN address before `npx expo start`. The default is `http://127.0.0.1:8000`.
+Press `w` for the website. A phone on the same Wi-Fi needs `EXPO_PUBLIC_API_URL` set to this PC's LAN address before `npx expo start`. The default is `http://127.0.0.1:9477`.
 
 Create an account in the app. No `AUTH_TOKEN`, sheet id, or Gemini key is required to log. `POST /notes` keeps the typed text and parses it when `GEMINI_API_KEY` is set. Without that key the note stays `pending`, and `POST /notes/{id}/parse` returns 503 with `parser not configured`.
 

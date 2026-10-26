@@ -79,7 +79,13 @@ def test_225_for_5_is_epley_262_5(api):
     assert response.status_code == 200
     body = response.json()
     assert body["lifts"] == [
-        {"exercise": "Bench Press", "date": "2026-10-21", "top_weight_lb": 225, "epley": 262.5}
+        {
+            "exercise": "Bench Press",
+            "date": "2026-10-21",
+            "label": "Push",
+            "top_weight_lb": 225,
+            "epley": 262.5,
+        }
     ]
     assert body["bodyweight"] == [
         {"date": "2026-10-20", "bodyweight_lb": 178, "mean_7d": 178},

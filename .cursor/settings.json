@@ -1,0 +1,22 @@
+{
+  "plugins": {
+    "impeccable": {
+      "enabled": true
+    },
+    "superdesign": {
+      "enabled": true
+    },
+    "ponytail": {
+      "enabled": true
+    },
+    "github": {
+      "enabled": true
+    },
+    "superpowers": {
+      "enabled": true
+    },
+    "firecrawl": {
+      "enabled": true
+    }
+  }
+}

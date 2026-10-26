@@ -51,8 +51,8 @@ def test_two_accounts_cannot_read_each_others_notes(local):
     assert first["token"] not in accounts
     assert second["token"] not in accounts
     books = list((tmp_path / "books").glob("*.json"))
-    assert len(books) == 1
-    assert "bench 225" in books[0].read_text(encoding="utf-8")
+    user_books = [book for book in books if "bench 225" in book.read_text(encoding="utf-8")]
+    assert len(user_books) == 1
 
 
 def test_duplicate_email_is_conflict_and_login_returns_a_token(local):
@@ -67,11 +67,46 @@ def test_duplicate_email_is_conflict_and_login_returns_a_token(local):
     assert body["email"] == "ada@example.com"
     assert body["token"] != created["token"]
     assert client.get("/me", headers={"Authorization": f"Bearer {body['token']}"}).json() == {
-        "email": "ada@example.com"
+        "email": "ada@example.com",
+        "name": "",
+        "height_in": None,
+        "split": {
+            "Mon": "Push",
+            "Tue": "Pull",
+            "Wed": "Legs",
+            "Thu": "Push",
+            "Fri": "Pull",
+            "Sat": "Legs",
+            "Sun": "",
+        },
     }
     assert client.post("/login", json={"email": "ada@example.com", "password": "nope"}).status_code == 401
     assert client.get("/me").status_code == 401
     assert client.get("/notes").status_code == 401
+
+
+def test_profile_height_and_split(local):
+    client, _tmp_path = local
+    created = _account(client, "ada@example.com")
+    headers = {"Authorization": f"Bearer {created['token']}"}
+
+    updated = client.patch(
+        "/me",
+        headers=headers,
+        json={"height_in": 70, "split": {"Mon": "Pull", "Sun": "Rest"}},
+    )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["height_in"] == 70
+    assert body["split"]["Mon"] == "Pull"
+    assert body["split"]["Tue"] == "Pull"
+    assert body["split"]["Sun"] == ""
+
+    again = client.get("/me", headers=headers)
+    assert again.json()["height_in"] == 70
+    assert again.json()["split"]["Mon"] == "Pull"
+    assert client.patch("/me", headers=headers, json={"split": {"Mon": "Chest"}}).status_code == 400
+    assert client.patch("/me", headers=headers, json={"height_in": -1}).status_code == 400
 
 
 def test_local_book_survives_a_new_load(local):

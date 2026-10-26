@@ -13,7 +13,7 @@ Read `docs/superpowers/specs/2026-10-21-gym-dashboard-design.md` before changing
 - `POST /media` accepts multipart photo bytes and stores them under `data/photos/`. The book keeps `storage_uri` only. `GET /media/{id}/file` streams the bytes for that book.
 - `GET /trends` computes top weight, Epley, bodyweight, nutrition, supplement adherence, and weekly muscle volume when read.
 - Tests use an in-memory `Book`. `uv run pytest` is the suite. The live sheet test skips unless `SHEET_ID` and `GOOGLE_APPLICATION_CREDENTIALS` are both set.
-- Start the API with `uv run uvicorn api.app.main:app --host 0.0.0.0 --port 8000`. In `mobile/`, run `npx expo start` and press `w` for the website. A phone on the same Wi-Fi needs `EXPO_PUBLIC_API_URL` set to this PC's LAN address. The default is `http://127.0.0.1:8000`.
+- Start the API with `uv run uvicorn api.app.main:app --host 0.0.0.0 --port 9477`. In `mobile/`, run `npx expo start` and press `w` for the website. A phone on the same Wi-Fi needs `EXPO_PUBLIC_API_URL` set to this PC's LAN address. The default is `http://127.0.0.1:9477`.
 
 ## Rules that are already locked
 

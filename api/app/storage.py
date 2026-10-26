@@ -23,6 +23,17 @@ from api.app.schema import (
 )
 
 LB_PER_KG = 2.2046226218
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+SPLIT_LABELS = frozenset({"Push", "Pull", "Legs"})
+DEFAULT_SPLIT = {
+    "Mon": "Push",
+    "Tue": "Pull",
+    "Wed": "Legs",
+    "Thu": "Push",
+    "Fri": "Pull",
+    "Sat": "Legs",
+    "Sun": "",
+}
 
 
 class Book(dict):
@@ -506,15 +517,95 @@ def login_account(email: str, password: str) -> dict[str, str] | None:
     return {"token": token, "email": account["email"]}
 
 
-def account_for_token(token: str) -> dict | None:
+def _account_in(accounts: list[dict], token: str) -> dict | None:
     if token == "":
         return None
     digest = _token_hash(token)
-    for account in load_accounts():
+    for account in accounts:
         for stored in account.get("sessions", []):
             if _same(stored, digest):
                 return account
     return None
+
+
+def account_for_token(token: str) -> dict | None:
+    return _account_in(load_accounts(), token)
+
+
+def _split_label(value) -> str:
+    if value in (None, "", "Rest"):
+        return ""
+    label = str(value)
+    if label not in SPLIT_LABELS:
+        raise ValueError("split")
+    return label
+
+
+def _stored_label(value) -> str:
+    if value in SPLIT_LABELS:
+        return str(value)
+    return ""
+
+
+def _public_height(raw):
+    if raw in ("", None):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value == int(value):
+        return int(value)
+    return value
+
+
+def public_profile(account: dict) -> dict:
+    stored = account.get("split")
+    if isinstance(stored, dict):
+        split = {day: _stored_label(stored.get(day, "")) for day in WEEKDAYS}
+    else:
+        split = dict(DEFAULT_SPLIT)
+    return {
+        "email": account["email"],
+        "name": str(account.get("name") or ""),
+        "height_in": _public_height(account.get("height_in", "")),
+        "split": split,
+    }
+
+
+def update_profile(token: str, fields: dict) -> dict | None:
+    accounts = load_accounts()
+    account = _account_in(accounts, token)
+    if account is None:
+        return None
+    if "height_in" in fields:
+        raw = fields["height_in"]
+        if raw in (None, ""):
+            account["height_in"] = ""
+        else:
+            try:
+                height = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError("height_in")
+            if height < 0:
+                raise ValueError("height_in")
+            account["height_in"] = int(height) if height == int(height) else height
+    if "split" in fields:
+        incoming = fields["split"]
+        if not isinstance(incoming, dict):
+            raise ValueError("split")
+        stored = account.get("split")
+        if isinstance(stored, dict):
+            current = {day: _stored_label(stored.get(day, "")) for day in WEEKDAYS}
+        else:
+            current = dict(DEFAULT_SPLIT)
+        for key, value in incoming.items():
+            if key not in WEEKDAYS:
+                raise ValueError("split")
+            current[key] = _split_label(value)
+        account["split"] = current
+    save_accounts(accounts)
+    return public_profile(account)
 
 
 def load_local_book(book_id: str) -> Book:

@@ -1,4 +1,5 @@
 import json
+import os
 import urllib.request
 from pathlib import Path
 
@@ -6,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app.main import app, get_book, get_model
-from api.app.parse import configured_model, gemini_complete
+from api.app.parse import configured_model, gemini_complete, groq_complete, plan_sets
 from api.app.storage import empty_book
 
 HEADER = {"Authorization": "Bearer test-token"}
@@ -452,8 +453,113 @@ def test_model_failure_keeps_the_typed_note(api):
     assert len(recovered["sets"]) == 1
 
 
-def test_configured_model_is_not_called(monkeypatch):
+def test_configured_model_prefers_groq(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     assert configured_model() is None
     monkeypatch.setenv("GEMINI_API_KEY", "not-sent")
     assert configured_model() is gemini_complete
+    monkeypatch.setenv("GROQ_API_KEY", "not-sent")
+    assert configured_model() is groq_complete
+
+
+def test_defer_parse_waits_for_the_parse_route(api):
+    client, _book = api
+
+    def early(_info):
+        raise AssertionError("parsed too early")
+
+    app.dependency_overrides[get_model] = lambda: early
+    created = client.post(
+        "/notes",
+        json={
+            "client_request_id": "defer",
+            "raw_text": "Push\nBench 100x5",
+            "session_date": "2026-10-25",
+            "defer_parse": True,
+        },
+        headers=HEADER,
+    )
+    assert created.status_code == 200
+    assert created.json()["note"]["parse_status"] == "pending"
+    note_id = created.json()["note"]["id"]
+    edited = client.patch(
+        f"/notes/{note_id}",
+        json={"raw_text": "Push\nBench 100x5", "defer_parse": True},
+        headers=HEADER,
+    )
+    assert edited.status_code == 200
+    assert edited.json()["parse_status"] == "pending"
+
+    def fake(info):
+        assert info["day_label"] == "Push"
+        return {"exercises": [{"name_as_written": "Bench", "sets": [{"weight": "100", "reps": "5"}]}]}
+
+    app.dependency_overrides[get_model] = lambda: fake
+    parsed = client.post(f"/notes/{note_id}/parse", headers=HEADER)
+    assert parsed.status_code == 200
+    assert parsed.json()["note"]["parse_status"] == "done"
+    assert parsed.json()["note"]["day_label"] == "Push"
+    assert parsed.json()["sets"][0]["name_as_written"] == "Bench"
+
+
+def test_groq_complete_reads_a_json_object(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.delenv("GROQ_MODEL", raising=False)
+    seen = {}
+
+    class Response:
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": "note\n{\"exercises\": []}"}}],
+            }).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_open(request, timeout=0):
+        seen["url"] = request.full_url
+        seen["auth"] = request.get_header("Authorization")
+        seen["body"] = json.loads(request.data.decode())
+        seen["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_open)
+    assert groq_complete({
+        "raw_text": "Bench",
+        "day_label": "Push",
+        "catalog": {"exercises": [], "aliases": []},
+    }) == {"exercises": []}
+    assert seen["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert seen["body"]["model"] == "openai/gpt-oss-120b"
+    assert seen["body"]["response_format"] == {"type": "json_object"}
+    assert seen["auth"] == "Bearer test-key"
+    assert seen["timeout"] == 60
+
+
+def _groq_key() -> str:
+    if os.getenv("GROQ_API_KEY"):
+        return os.environ["GROQ_API_KEY"]
+    path = Path(".env")
+    if not path.is_file():
+        return ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("GROQ_API_KEY="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
+@pytest.mark.skipif(_groq_key() == "", reason="GROQ_API_KEY not set")
+def test_live_groq_parses_one_set(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", _groq_key())
+    payload = groq_complete({
+        "raw_text": "Push\nBench Press 100x5",
+        "day_label": "Push",
+        "catalog": {"exercises": [], "aliases": []},
+    })
+    planned = plan_sets(payload)
+    matched = [item for item in planned if item["weight"] == "100" and item["reps"] == "5"]
+    assert matched

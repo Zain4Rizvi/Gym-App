@@ -1,6 +1,7 @@
 import { Image } from "expo-image";
 import { useEffect, useState } from "react";
 
+import { Radius } from "@/constants/theme";
 import { API_URL } from "@/utils/api";
 
 export function PhotoThumb({ id, token }: { id: string; token: string }) {
@@ -34,7 +35,7 @@ export function PhotoThumb({ id, token }: { id: string; token: string }) {
           ? { uri }
           : { uri, headers: { Authorization: `Bearer ${token}` } }
       }
-      style={{ width: 96, height: 128, borderRadius: 8 }}
+      style={{ width: 120, height: 160, borderRadius: Radius.md, borderCurve: "continuous" }}
       contentFit="cover"
     />
   );

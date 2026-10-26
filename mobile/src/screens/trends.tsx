@@ -1,0 +1,232 @@
+import { useState } from "react";
+import { Pressable, View } from "react-native";
+
+import { Button } from "@/components/button";
+import { ChoiceRow } from "@/components/choice-row";
+import { DatedChart } from "@/components/dated-chart";
+import { ScreenBody } from "@/components/screen-body";
+import { Sparkline } from "@/components/sparkline";
+import { ThemedText } from "@/components/themed-text";
+import { ThemedView } from "@/components/themed-view";
+import { Spacing, webCursor } from "@/constants/theme";
+import { useTheme } from "@/hooks/use-theme";
+import { useTrends } from "@/hooks/use-trends";
+import { figure, signed } from "@/utils/figures";
+import { shortDate } from "@/utils/date";
+import type { LiftPoint, Trends } from "@/utils/trends";
+
+const SEGMENTS = ["Strength", "Body", "Fuel"] as const;
+
+function series(lifts: LiftPoint[], name: string): LiftPoint[] {
+  return lifts.filter((row) => row.exercise === name);
+}
+
+function liftNames(lifts: LiftPoint[]): string[] {
+  const latest = new Map<string, string>();
+  for (const row of lifts) {
+    const previous = latest.get(row.exercise);
+    if (!previous || row.date > previous) latest.set(row.exercise, row.date);
+  }
+  return [...latest.keys()].sort((left, right) => {
+    const leftDate = latest.get(left) ?? "";
+    const rightDate = latest.get(right) ?? "";
+    if (leftDate !== rightDate) return leftDate < rightDate ? 1 : -1;
+    return left.localeCompare(right);
+  });
+}
+
+function weightOn(days: Trends["bodyweight"], date: string): number | null {
+  const exact = days.find((row) => row.date === date);
+  if (exact) return exact.bodyweight_lb;
+  const prior = [...days].reverse().find((row) => row.date <= date);
+  return prior?.bodyweight_lb ?? null;
+}
+
+export function TrendsScreen() {
+  const theme = useTheme();
+  const { trends, error, load } = useTrends();
+  const [segment, setSegment] = useState<(typeof SEGMENTS)[number]>("Strength");
+  const [lift, setLift] = useState<string | null>(null);
+
+  if (error && !trends) {
+    return (
+      <ThemedView style={{ flex: 1, padding: Spacing.four, gap: Spacing.three }}>
+        <ThemedText selectable style={{ color: theme.danger }}>{error}</ThemedText>
+        <Button variant="secondary" title="Retry" onPress={load} />
+      </ThemedView>
+    );
+  }
+
+  if (!trends) {
+    return (
+      <ThemedView style={{ flex: 1, padding: Spacing.four }}>
+        <ThemedText themeColor="textSecondary">Opening the record…</ThemedText>
+      </ThemedView>
+    );
+  }
+
+  const weight = trends.bodyweight.at(-1);
+  const food = [...trends.nutrition].reverse().find((row) => row.calories != null || row.protein_g != null);
+  const adherence = trends.adherence;
+
+  return (
+    <ThemedView style={{ flex: 1 }}>
+      <ScreenBody contentContainerStyle={{ paddingTop: Spacing.three, gap: Spacing.five }}>
+        <View style={{ gap: Spacing.two }}>
+          <ThemedText type="title">Trends</ThemedText>
+          <ChoiceRow
+            options={SEGMENTS}
+            value={segment}
+            onChange={(value) => {
+              setSegment(value as (typeof SEGMENTS)[number]);
+              setLift(null);
+            }}
+          />
+        </View>
+
+        {segment === "Strength" ? <Strength lifts={trends.lifts} bodyweight={trends.bodyweight} lift={lift} onOpen={setLift} /> : null}
+
+        {segment === "Body" && weight ? (
+          <View style={{ gap: Spacing.two }}>
+            <ThemedText type="small" themeColor="textSecondary" style={{ letterSpacing: 1.2, textTransform: "uppercase" }}>
+              Bodyweight
+            </ThemedText>
+            <ThemedText selectable style={{ fontSize: 56, lineHeight: 60, fontWeight: "600", letterSpacing: -2, fontVariant: ["tabular-nums"] }}>
+              {figure(weight.bodyweight_lb)}
+            </ThemedText>
+            <ThemedText themeColor="textSecondary">7-day mean {figure(weight.mean_7d)} lb</ThemedText>
+            <Sparkline
+              values={trends.bodyweight.map((row) => row.bodyweight_lb)}
+              comparison={trends.bodyweight.map((row) => row.mean_7d)}
+            />
+          </View>
+        ) : null}
+
+        {segment === "Fuel" ? (
+          <View style={{ gap: Spacing.four }}>
+            <View style={{ gap: Spacing.two }}>
+              <ThemedText type="small" themeColor="textSecondary" style={{ letterSpacing: 1.2, textTransform: "uppercase" }}>
+                Calories
+              </ThemedText>
+              <ThemedText selectable style={{ fontSize: 56, lineHeight: 60, fontWeight: "600", letterSpacing: -2, fontVariant: ["tabular-nums"] }}>
+                {figure(food?.calories, 0)}
+              </ThemedText>
+              <Sparkline values={trends.nutrition.map((row) => row.calories).filter((value): value is number => value != null)} />
+            </View>
+            <View style={{ gap: Spacing.two }}>
+              <ThemedText type="small" themeColor="textSecondary" style={{ letterSpacing: 1.2, textTransform: "uppercase" }}>
+                Protein
+              </ThemedText>
+              <ThemedText selectable style={{ fontSize: 40, lineHeight: 44, fontWeight: "600", letterSpacing: -1, fontVariant: ["tabular-nums"] }}>
+                {figure(food?.protein_g, 0)} g
+              </ThemedText>
+              <Sparkline values={trends.nutrition.map((row) => row.protein_g).filter((value): value is number => value != null)} />
+            </View>
+            <ThemedText themeColor="textSecondary">
+              Supplements {adherence.supplement_dates} of {adherence.day_dates} days
+            </ThemedText>
+          </View>
+        ) : null}
+      </ScreenBody>
+    </ThemedView>
+  );
+}
+
+function Strength({
+  lifts,
+  bodyweight,
+  lift,
+  onOpen,
+}: {
+  lifts: LiftPoint[];
+  bodyweight: Trends["bodyweight"];
+  lift: string | null;
+  onOpen: (name: string | null) => void;
+}) {
+  const theme = useTheme();
+  const names = liftNames(lifts);
+  if (lift) {
+    const points = series(lifts, lift);
+    const last = points.at(-1);
+    const first = points[0];
+    const delta = first && last ? last.epley - first.epley : null;
+    const dayWeight = last ? weightOn(bodyweight, last.date) : null;
+    const ratio = last && dayWeight ? last.epley / dayWeight : null;
+    return (
+      <View style={{ gap: Spacing.three }}>
+        <Pressable accessibilityRole="button" onPress={() => onOpen(null)} style={webCursor}>
+          <ThemedText themeColor="textSecondary">Lifts</ThemedText>
+        </Pressable>
+        <View style={{ gap: Spacing.two }}>
+          <ThemedText type="title">{lift}</ThemedText>
+          <ThemedText selectable style={{ fontSize: 56, lineHeight: 60, fontWeight: "600", letterSpacing: -2, fontVariant: ["tabular-nums"] }}>
+            {figure(last?.epley)}
+          </ThemedText>
+          <ThemedText themeColor="textSecondary">estimated 1RM · {figure(last?.top_weight_lb, 0)} lb top set</ThemedText>
+          {delta != null && first ? (
+            <ThemedText selectable style={{ color: delta >= 0 ? theme.accent : theme.danger, fontVariant: ["tabular-nums"] }}>
+              {signed(delta)} since {shortDate(first.date)}
+            </ThemedText>
+          ) : null}
+          {ratio != null ? (
+            <ThemedText selectable themeColor="textSecondary" style={{ fontVariant: ["tabular-nums"] }}>
+              {figure(ratio, 2)} per lb of bodyweight
+            </ThemedText>
+          ) : null}
+        </View>
+        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+          <ThemedText type="small" style={{ color: theme.accent }}>
+            1RM
+          </ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            Body, lb
+          </ThemedText>
+        </View>
+        <DatedChart
+          points={points.map((point) => ({ date: point.date, value: point.epley }))}
+          bodyweight={points.map((point) => weightOn(bodyweight, point.date))}
+        />
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ gap: 2 }}>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: Spacing.two, paddingBottom: Spacing.two }}>
+        <ThemedText type="small" themeColor="textSecondary">
+          Lift
+        </ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          1RM
+        </ThemedText>
+      </View>
+      {names.map((name) => {
+        const row = series(lifts, name).at(-1);
+        return (
+          <Pressable
+            key={name}
+            accessibilityRole="button"
+            onPress={() => onOpen(name)}
+            style={({ pressed }) => [
+              {
+                minHeight: 48,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: Spacing.three,
+                paddingHorizontal: Spacing.two,
+                borderRadius: 12,
+                backgroundColor: pressed ? theme.backgroundElement : "transparent",
+              },
+              webCursor,
+            ]}>
+            <ThemedText style={{ flex: 1 }}>{name}</ThemedText>
+            <ThemedText selectable style={{ fontVariant: ["tabular-nums"] }}>
+              {figure(row?.epley)}
+            </ThemedText>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}

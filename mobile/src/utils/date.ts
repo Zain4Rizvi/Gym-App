@@ -2,6 +2,23 @@ export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export const DAY_LABELS = ["Push", "Pull", "Legs", "Other"] as const;
 
+export function dayHeading(date: string): { title: string; detail: string } {
+  if (!DATE_RE.test(date)) return { title: "Date", detail: "YYYY-MM-DD" };
+  const [year, month, day] = date.split("-").map(Number);
+  const value = new Date(year, month - 1, day);
+  if (Number.isNaN(value.getTime())) return { title: date, detail: "" };
+  const long = value.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  if (date === today()) return { title: "Today", detail: long };
+  return { title: long, detail: date };
+}
+
+export function shortDate(iso: string): string {
+  if (iso === today()) return "Today";
+  if (!DATE_RE.test(iso)) return iso;
+  const [year, month, day] = iso.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
 export function today(): string {
   const now = new Date();
   const month = String(now.getMonth() + 1).padStart(2, "0");

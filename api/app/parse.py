@@ -31,9 +31,17 @@ def model_input(note: dict, book) -> dict:
 
 
 def configured_model():
-    if not os.getenv("GEMINI_API_KEY"):
-        return None
-    return gemini_complete
+    if os.getenv("GROQ_API_KEY"):
+        return groq_complete
+    if os.getenv("GEMINI_API_KEY"):
+        return gemini_complete
+    return None
+
+
+def active_model_name() -> str:
+    if os.getenv("GROQ_API_KEY"):
+        return os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+    return os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 def _prompt(info: dict) -> str:
@@ -84,7 +92,70 @@ def gemini_complete(info: dict) -> dict:
         raise RuntimeError(f"gemini {exc.code}: {detail}") from exc
     payload = json.loads(raw.decode())
     text = payload["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
+    return _json_object(text)
+
+
+def groq_complete(info: dict) -> dict:
+    key = os.environ["GROQ_API_KEY"]
+    model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Return one JSON object and nothing else."},
+            {"role": "user", "content": _prompt(info)},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    request = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "User-Agent": "gym-app/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:500]
+        raise RuntimeError(f"groq {exc.code}: {detail}") from exc
+    payload = json.loads(raw.decode())
+    message = payload["choices"][0]["message"]
+    text = message.get("content") or message.get("reasoning") or ""
+    return _json_object(text)
+
+
+def _json_object(text: str) -> dict:
+    raw = str(text or "").strip()
+    try:
+        found = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("model payload is not an object")
+        found = json.loads(raw[start:end + 1])
+    if not isinstance(found, dict):
+        raise ValueError("model payload is not an object")
+    return found
+
+
+def _stated_label(note: dict) -> str:
+    current = note.get("day_label", "")
+    if current:
+        return current
+    for line in note.get("raw_text", "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        for label in ("Push", "Pull", "Legs", "Other"):
+            if text.casefold() == label.casefold():
+                return label
+        break
+    return ""
 
 
 def _plain(value) -> tuple[str, bool]:
@@ -269,6 +340,9 @@ def _result(book, note: dict, conflicts: list) -> dict:
 
 
 def run_parse(book, note: dict, model, overwrite_set_ids: list | None) -> dict:
+    stated = _stated_label(note)
+    if stated and stated != note.get("day_label", ""):
+        note = patch_row(book, "Notes", note["id"], {"day_label": stated})
     try:
         payload = model(model_input(note, book))
         planned = plan_sets(payload)
@@ -326,7 +400,7 @@ def run_parse(book, note: dict, model, overwrite_set_ids: list | None) -> dict:
     patch_row(book, "Notes", note["id"], {
         "parse_status": "done",
         "error_text": None,
-        "model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        "model": active_model_name(),
         "prompt_version": PROMPT_VERSION,
         "parsed_json": dumped,
     })

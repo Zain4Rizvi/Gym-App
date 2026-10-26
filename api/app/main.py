@@ -1,11 +1,14 @@
 import os
 import re
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from api.app.auth import bearer_token, require_token, token_matches
+from api.app.demo import ensure_demo, reset_demo
 from api.app.parse import configured_model, learn_alias, run_parse
 from api.app.photos import PhotoPath, resolve_photo, save_photo
 from api.app.schema import DATE_FIELDS, DATE_TABS, PATHS, POSES
@@ -24,12 +27,14 @@ from api.app.storage import (
     login_account,
     patch_row,
     rebuild_daily_view,
+    public_profile,
     register_account,
     row_by_date,
     rows_by_field,
     save_book,
     save_local_book,
     sets_on_date,
+    update_profile,
     sheets_service,
     toggle_supplement,
     upsert_by_date,
@@ -37,7 +42,29 @@ from api.app.storage import (
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-app = FastAPI()
+
+def _load_env() -> None:
+    path = Path(".env")
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_env()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    ensure_demo()
+    yield
+
+
+app = FastAPI(lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
@@ -101,6 +128,13 @@ def health():
     return {"ok": True}
 
 
+@app.post("/demo/reset")
+def demo_reset(authorization: str | None = Header(default=None)):
+    if not reset_demo(bearer_token(authorization)):
+        raise HTTPException(status_code=404, detail="not the demo book")
+    return {"ok": True}
+
+
 def _email_and_password(body: dict) -> tuple[str, str]:
     email = str(body.get("email") or "").strip()
     password = "" if body.get("password") is None else str(body.get("password"))
@@ -129,7 +163,32 @@ def me(authorization: str | None = Header(default=None)):
     account = account_for_token(bearer_token(authorization))
     if account is None:
         raise HTTPException(status_code=401, detail="unauthorized")
-    return {"email": account["email"]}
+    return public_profile(account)
+
+
+@app.patch("/me")
+def patch_me(body: dict = Body(...), authorization: str | None = Header(default=None)):
+    updated = update_profile(bearer_token(authorization), body)
+    if updated is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return updated
+
+
+def _sync_note_text(book: Book, note: dict, previous: str, model) -> dict:
+    if note.get("raw_text", "") == previous:
+        return note
+    # ponytail: a text edit drops generated sets immediately; queued parse waits until a key exists
+    if model is None:
+        for row in list(book["Sets"]):
+            if row["note_id"] == note["id"] and row["source"] == "gemini" and row["edited_by_user"] != "TRUE":
+                delete_row(book, "Sets", row["id"])
+        return patch_row(
+            book,
+            "Notes",
+            note["id"],
+            {"parse_status": "pending", "error_text": None, "parsed_json": None},
+        )
+    return run_parse(book, note, model, None)["note"]
 
 
 def mount(router: APIRouter) -> None:
@@ -137,8 +196,9 @@ def mount(router: APIRouter) -> None:
     def create_note(body: dict = Body(...), book: Book = Depends(get_book), model=Depends(get_model)):
         if not str(body.get("client_request_id") or ""):
             raise HTTPException(status_code=400, detail="client_request_id is required")
+        defer = bool(body.get("defer_parse"))
         note = insert_row(book, "Notes", body)
-        if model is None or note["parse_status"] == "done":
+        if defer or model is None or note["parse_status"] == "done":
             sets = [row for row in book["Sets"] if row["note_id"] == note["id"]]
             return {"note": note, "sets": sets}
         return run_parse(book, note, model, None)
@@ -241,11 +301,15 @@ def add_item_routes(router: APIRouter, tab: str, path: str) -> None:
         return get_row(book, sheet, key)
 
     @router.patch(f"/{path}/{{row_id}}", operation_id=f"patch_{path}")
-    def patch(row_id: str, body: dict = Body(...), book: Book = Depends(get_book)):
+    def patch(row_id: str, body: dict = Body(...), book: Book = Depends(get_book), model=Depends(get_model)):
         assigning = sheet == "Sets" and bool(body.get("exercise_id"))
         if sheet == "Sets":
             body = {**body, "edited_by_user": True}
+        previous = get_row(book, sheet, row_id).get("raw_text", "") if sheet == "Notes" else ""
         row = patch_row(book, sheet, row_id, body)
+        if sheet == "Notes" and "raw_text" in body:
+            deferred = bool(body.get("defer_parse"))
+            row = _sync_note_text(book, row, previous, None if deferred else model)
         if assigning:
             learn_alias(book, row)
         return row

@@ -1,12 +1,15 @@
 import * as ImagePicker from "expo-image-picker";
 import { useState } from "react";
-import { Pressable, View } from "react-native";
+import { View } from "react-native";
 
+import { Button } from "@/components/button";
 import type { PickedPhoto } from "@/components/picked-photo";
 import { ThemedText } from "@/components/themed-text";
 import { Spacing } from "@/constants/theme";
+import { useTheme } from "@/hooks/use-theme";
 
 export function PhotoPicker({ onPick }: { onPick: (photo: PickedPhoto) => void }) {
+  const theme = useTheme();
   const [cameraNeeded, setCameraNeeded] = useState(false);
 
   async function launch(camera: boolean) {
@@ -42,19 +45,15 @@ export function PhotoPicker({ onPick }: { onPick: (photo: PickedPhoto) => void }
     <View style={{ gap: Spacing.two }}>
       {cameraNeeded ? (
         <View style={{ gap: Spacing.two }}>
-          <ThemedText selectable>Camera access is required to take a physique photo.</ThemedText>
-          <Pressable accessibilityRole="button" onPress={grant}>
-            <ThemedText type="link">Grant</ThemedText>
-          </Pressable>
+          <ThemedText selectable style={{ color: theme.danger }}>
+            Camera access is required to take a physique photo.
+          </ThemedText>
+          <Button title="Grant" onPress={grant} />
         </View>
       ) : (
-        <Pressable accessibilityRole="button" onPress={take}>
-          <ThemedText type="link">Take photo</ThemedText>
-        </Pressable>
+        <Button title="Take photo" onPress={take} />
       )}
-      <Pressable accessibilityRole="button" onPress={() => launch(false)}>
-        <ThemedText type="link">Choose photo</ThemedText>
-      </Pressable>
+      <Button variant="secondary" title="Choose photo" onPress={() => launch(false)} />
     </View>
   );
 }

@@ -13,6 +13,9 @@ wheels/
 # Local books, accounts, and photos
 data/
 
+# Process temp. Keep this on Z:, not the C: user temp folder.
+.tmp/
+
 # Expo
 mobile/node_modules
 mobile/.expo

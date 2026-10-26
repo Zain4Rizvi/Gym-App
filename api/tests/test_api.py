@@ -60,6 +60,45 @@ def test_notes_stay_pending_and_parse_does_not_touch_them(api):
     assert book["Sets"] == []
 
 
+def test_editing_note_text_drops_generated_sets(api):
+    client, book = api
+    created = client.post(
+        "/notes",
+        json={"client_request_id": "req-9", "raw_text": "bench", "session_date": "2026-10-22", "day_label": "Push"},
+        headers=HEADER,
+    )
+    note_id = created.json()["note"]["id"]
+    generated = client.post(
+        "/sets",
+        json={"note_id": note_id, "name_as_written": "Bench", "set_number": "1", "weight_lb": 225, "reps": 5, "source": "gemini"},
+        headers=HEADER,
+    )
+    assert generated.status_code == 200
+    kept = client.post(
+        "/sets",
+        json={
+            "note_id": note_id,
+            "name_as_written": "Row",
+            "set_number": "1",
+            "weight_lb": 135,
+            "reps": 8,
+            "source": "user",
+            "edited_by_user": True,
+        },
+        headers=HEADER,
+    )
+    assert kept.status_code == 200
+    same = client.patch(f"/notes/{note_id}", json={"raw_text": "bench"}, headers=HEADER)
+    assert same.json()["raw_text"] == "bench"
+    assert len(book["Sets"]) == 2
+    changed = client.patch(f"/notes/{note_id}", json={"raw_text": "squat"}, headers=HEADER)
+    assert changed.status_code == 200
+    assert changed.json()["raw_text"] == "squat"
+    assert changed.json()["parse_status"] == "pending"
+    assert [row["name_as_written"] for row in book["Sets"]] == ["Row"]
+    assert book["Sets"][0]["edited_by_user"] == "TRUE"
+
+
 def test_day_put_is_partial_and_builds_the_daily_view(api):
     client, _book = api
     created = client.put("/days/2026-09-22", json={"bodyweight_lb": 180, "day_label": "Push"}, headers=HEADER)

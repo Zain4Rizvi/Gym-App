@@ -5,6 +5,7 @@ export type Draft = {
   raw_text: string;
   session_date: string;
   day_label: string;
+  note_id?: string;
 };
 
 export function readDraft(): Draft | null {

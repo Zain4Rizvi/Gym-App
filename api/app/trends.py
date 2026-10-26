@@ -36,6 +36,13 @@ def _session_date(book: Book, session_id: str) -> str:
     return ""
 
 
+def _session_label(book: Book, session_id: str) -> str:
+    for session in book["Sessions"]:
+        if session["id"] == session_id:
+            return session.get("label", "")
+    return ""
+
+
 def _exercise_name(book: Book, row: dict) -> str:
     exercise_id = row.get("exercise_id", "")
     if exercise_id:
@@ -56,7 +63,7 @@ def _counts(row: dict) -> tuple[float, float] | None:
 
 
 def _lifts(book: Book) -> list[dict]:
-    grouped: dict[tuple[str, str], list[tuple[float, float]]] = {}
+    grouped: dict[tuple[str, str], list[tuple[float, float, str]]] = {}
     for row in book["Sets"]:
         counted = _counts(row)
         if counted is None:
@@ -65,14 +72,16 @@ def _lifts(book: Book) -> list[dict]:
         name = _exercise_name(book, row)
         if day == "" or name == "":
             continue
-        grouped.setdefault((name, day), []).append(counted)
+        label = _session_label(book, row.get("session_id", ""))
+        grouped.setdefault((name, day), []).append((counted[0], counted[1], label))
     lifts = []
     for (name, day), sets in sorted(grouped.items(), key=lambda item: (item[0][1], item[0][0])):
-        weight, reps = max(sets, key=lambda item: item[0])
-        best = max(weight * (1 + reps_value / 30) for weight, reps_value in sets)
+        weight, _reps, label = max(sets, key=lambda item: item[0])
+        best = max(item[0] * (1 + item[1] / 30) for item in sets)
         lifts.append({
             "exercise": name,
             "date": day,
+            "label": label,
             "top_weight_lb": _shown(weight),
             "epley": _shown(best),
         })
