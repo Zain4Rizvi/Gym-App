@@ -9,6 +9,17 @@ from api.app.storage import register_account
 from api.app.trends import build_trends
 
 
+def test_flat_export_is_stored_as_a_typed_note():
+    sessions = parse_log("Oct 26 push Bench 183 x 4, 83x 3 Shoulder press 45 x 2, 23 x 5")
+    assert sessions[0]["text"] == "Push\nBench 183 x 4, 83x 3\nShoulder press 45 x 2, 23 x 5"
+    assert sessions[0]["label"] == "Push"
+    bench, shoulder = sessions[0]["exercises"]
+    assert bench["sets"][0]["weight"] == 183
+    assert bench["sets"][1]["reps"] == 3
+    assert shoulder["name"] == "Shoulder Press"
+    assert shoulder["sets"][1]["weight"] == 23
+
+
 def test_log_format_keeps_plates_prs_and_bodyweight_reps():
     sessions = parse_log(
         "Summer 2022 Aug 6 Bench 1 plate x 9 "
@@ -51,7 +62,12 @@ def test_imported_book_uses_the_real_log():
     assert any(row["exercise"] == "Lat Pulldown" for row in trends["lifts"])
     assert any(row["exercise"] == "Incline Dumbbell Press" for row in trends["lifts"])
     assert trends["bodyweight"] == []
-    assert book["Notes"][0]["client_request_id"].startswith("lifts-txt-")
+    assert len(book["Notes"]) == 1
+    assert len(book["Sessions"]) > 100
+    note = book["Notes"][0]
+    assert note["client_request_id"].startswith("lifts-txt-")
+    assert note["raw_text"].index("2022") < note["raw_text"].index("Oct 25, 2026")
+    assert {row["note_id"] for row in book["Sessions"]} == {note["id"]}
 
 
 def test_reset_restores_the_seed_and_startup_keeps_a_typed_note(monkeypatch, tmp_path):
@@ -80,8 +96,9 @@ def test_reset_restores_the_seed_and_startup_keeps_a_typed_note(monkeypatch, tmp
             assert any(row["raw_text"] == "Bench 225x5" for row in kept.json())
         assert client.post("/demo/reset", headers=headers).status_code == 200
         notes = client.get("/notes", headers=headers).json()
-        assert len(notes) > 100
-        assert all(row["raw_text"] != "Bench 225x5" for row in notes)
+        assert len(notes) == 1
+        assert "Bench 225x5" not in notes[0]["raw_text"]
+        assert "Oct 25, 2026" in notes[0]["raw_text"]
         assert notes[0]["client_request_id"].startswith("lifts-txt-")
         other = register_account("ada@example.com", "secret")
         denied = client.post(

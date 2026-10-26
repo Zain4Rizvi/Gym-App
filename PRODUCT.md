@@ -5,7 +5,7 @@ The name is Gym. The home screen is a notepad. Trends, Coach, and Account are th
 ## What it does
 
 - Login opens the demo book.
-- Notes is one plain text field for today. Typing autosaves. A pause parses the note when a model key is set. The unsent draft stays on the device.
+- Notes is one plain text field for the whole log. Typing autosaves. A pause parses a short note when a model key is set. The unsent draft stays on the device.
 - Trends reads `/trends`. Strength lists estimated 1RM. Body and Fuel stay on the screen. Bodyweight and calories are empty until something records them. The supplement line counts session dates.
 - Coach asks the model about the log and does not change it.
 - Account edits height and the weekday split, and can reset the demo book.

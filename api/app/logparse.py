@@ -10,6 +10,10 @@ LABELS = {
     "push": "Push", "pull": "Pull", "legs": "Legs", "leg": "Legs",
     "arms": "Other", "shoulders": "Other", "upper": "Other", "lower": "Other",
 }
+HEADING = {
+    "push": "Push", "pull": "Pull", "legs": "Legs", "leg": "Legs",
+    "arms": "Arms", "shoulders": "Shoulders", "upper": "Upper", "lower": "Lower",
+}
 BARBELL = {"Bench Press", "Incline Bench Press", "Barbell Squat", "Deadlift", "Romanian Deadlift"}
 BODYWEIGHT = {"Pull Up", "Chin Up", "Dip", "Push Up"}
 STOP = {
@@ -200,13 +204,14 @@ def parse_log(text: str) -> list[dict]:
         last_month = month
         nxt = next((item[3] for item in events[index + 1:] if item[0] == "date"), len(cleaned))
         body = cleaned[end:nxt].strip()
-        label, exercises = _body(body)
+        note = format_note(body)
+        label, exercises = _body(note)
         if not exercises:
             continue
         sessions.append({
             "date": current.isoformat(),
             "label": label,
-            "text": body,
+            "text": note,
             "exercises": exercises,
         })
     return sessions
@@ -219,18 +224,39 @@ def _month(raw: str) -> int:
     return MONTHS[key[:3]]
 
 
-def _body(text: str) -> tuple[str, list[dict]]:
-    label = ""
+def _peel(text: str) -> tuple[str, str, str]:
     stripped = text.lstrip(" -")
-    first = stripped.split(" ", 1)[0].strip("():,").lower()
-    second = ""
-    if first:
-        rest = stripped[len(stripped.split(" ", 1)[0]):].lstrip()
-        second = rest.split(" ", 1)[0].strip("():,").lower()
+    line, sep, rest = stripped.partition("\n")
+    key = line.strip("():,").lower()
+    if sep and key in LABELS:
+        return LABELS[key], HEADING[key], rest.lstrip(" -")
+    word = stripped.split(" ", 1)[0] if stripped else ""
+    first = word.strip("():,").lower()
     exercise_start = any(stripped.lower().startswith(alias) for alias, _canon in ALIASES)
-    if first in LABELS and not exercise_start:
-        label = LABELS[first]
-        stripped = stripped[len(stripped.split(" ", 1)[0]):].lstrip(" -")
+    if word and first in LABELS and not exercise_start:
+        return LABELS[first], HEADING[first], stripped[len(word):].lstrip(" -")
+    return "", "", stripped
+
+
+def format_note(text: str) -> str:
+    _label, heading, rest = _peel(text)
+    lines = [heading] if heading else []
+    names = _names(rest)
+    if not names:
+        chunk = re.sub(r"\s+", " ", rest).strip(" ,")
+        if chunk:
+            lines.append(chunk)
+        return "\n".join(lines)
+    for index, (start, _end, _name) in enumerate(names):
+        stop = names[index + 1][0] if index + 1 < len(names) else len(rest)
+        chunk = re.sub(r"\s+", " ", rest[start:stop]).strip(" ,")
+        if chunk:
+            lines.append(chunk)
+    return "\n".join(lines)
+
+
+def _body(text: str) -> tuple[str, list[dict]]:
+    label, _heading, stripped = _peel(text)
     names = _names(stripped)
     exercises = []
     for index, (start, end, name) in enumerate(names):

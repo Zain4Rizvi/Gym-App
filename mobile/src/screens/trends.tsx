@@ -12,7 +12,7 @@ import { Spacing, webCursor } from "@/constants/theme";
 import { useTheme } from "@/hooks/use-theme";
 import { useTrends } from "@/hooks/use-trends";
 import { figure, signed } from "@/utils/figures";
-import { shortDate } from "@/utils/date";
+import { mediumDate } from "@/utils/date";
 import type { LiftPoint, Trends } from "@/utils/trends";
 
 const SEGMENTS = ["Strength", "Body", "Fuel"] as const;
@@ -210,10 +210,12 @@ function Strength({
           <ThemedText selectable style={{ fontSize: 56, lineHeight: 60, fontWeight: "600", letterSpacing: -2, fontVariant: ["tabular-nums"] }}>
             {figure(last?.epley)}
           </ThemedText>
-          <ThemedText themeColor="textSecondary">estimated 1RM · {figure(last?.top_weight_lb, 0)} lb top set</ThemedText>
+          <ThemedText themeColor="textSecondary">
+            estimated 1RM · {figure(last?.top_weight_lb, 0)} lb top set · {last ? mediumDate(last.date) : ""}
+          </ThemedText>
           {delta != null && first ? (
             <ThemedText selectable style={{ color: delta >= 0 ? theme.accent : theme.danger, fontVariant: ["tabular-nums"] }}>
-              {signed(delta)} since {shortDate(first.date)}
+              {signed(delta)} since {mediumDate(first.date)}
             </ThemedText>
           ) : null}
           {lastRatio != null ? (
@@ -223,19 +225,19 @@ function Strength({
             </ThemedText>
           ) : null}
         </View>
-        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-          <ThemedText type="small" style={{ color: theme.accent }}>
-            1RM
-          </ThemedText>
-          {lastRatio != null ? (
-            <ThemedText type="small" style={{ color: "#7AA2FF" }}>
-              per lb
-            </ThemedText>
-          ) : null}
-        </View>
         <DatedChart
-          points={points.map((point) => ({ date: point.date, value: point.epley }))}
-          relative={relative}
+          series={[
+            {
+              label: "Top set",
+              color: String(theme.accent),
+              points: points.map((point) => ({ date: point.date, value: point.top_weight_lb })),
+            },
+            {
+              label: "1RM",
+              color: String(theme.text),
+              points: points.map((point) => ({ date: point.date, value: point.epley })),
+            },
+          ]}
         />
       </View>
     );

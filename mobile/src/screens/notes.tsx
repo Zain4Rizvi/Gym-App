@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentRef } from "react";
 import { KeyboardAvoidingView, Platform, TextInput } from "react-native";
 
 import { Spacing } from "@/constants/theme";
 import { useTheme } from "@/hooks/use-theme";
 import { api } from "@/utils/api";
 import { useAuth } from "@/utils/auth";
-import { today, uuid4 } from "@/utils/date";
+import { mediumDate, today, uuid4 } from "@/utils/date";
 import { readDraft, writeDraft } from "@/utils/draft";
 
 type Note = {
@@ -19,46 +19,54 @@ type Note = {
 };
 
 const PARSE_WAIT = 1200;
+// ponytail: the model parser turns one note into one session, so the full log is not sent
+const PARSE_LIMIT = 8000;
 
-function newest(notes: Note[]): Note | undefined {
-  return notes.reduce<Note | undefined>((best, note) => {
-    if (!best) return note;
-    const stamp = note.updated_at || note.created_at;
-    const bestStamp = best.updated_at || best.created_at;
-    return stamp > bestStamp ? note : best;
-  }, undefined);
+function ordered(notes: Note[]): Note[] {
+  return [...notes].sort((left, right) => {
+    const byDay = left.session_date.localeCompare(right.session_date);
+    if (byDay !== 0) return byDay;
+    return (left.created_at || "").localeCompare(right.created_at || "");
+  });
+}
+
+function asOneNote(notes: Note[]): string {
+  if (notes.length === 1) return notes[0].raw_text;
+  return ordered(notes)
+    .map((note) => `${mediumDate(note.session_date)}\n${note.raw_text}`.trim())
+    .join("\n\n");
 }
 
 export function NotesScreen() {
   const { token } = useAuth();
   const theme = useTheme();
-  const [opening] = useState(() => {
-    const stored = readDraft();
-    return stored?.session_date === today() ? stored : null;
-  });
-  const [text, setText] = useState(opening?.raw_text ?? "");
-  const textRef = useRef(text);
-  const idRef = useRef<string | null>(opening?.note_id ?? null);
-  const requestRef = useRef(opening?.client_request_id || uuid4());
+  const [text, setText] = useState("");
+  const textRef = useRef("");
+  const idRef = useRef<string | null>(null);
+  const requestRef = useRef(uuid4());
   const savedRef = useRef<string | null>(null);
   const parsedRef = useRef<string | null>(null);
   const typed = useRef(false);
   const loaded = useRef(false);
+  const many = useRef(false);
   const tokenRef = useRef(token);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const parseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chain = useRef(Promise.resolve());
+  const dateRef = useRef(today());
+  const inputRef = useRef<ComponentRef<typeof TextInput>>(null);
+  const placed = useRef(false);
 
   const persist = useCallback(async (current: string) => {
     async function save(value: string): Promise<void> {
       const auth = tokenRef.current;
-      if (!auth || !loaded.current) return;
+      if (!auth || !loaded.current || many.current) return;
       if (value === savedRef.current && idRef.current) return;
       if (value.trim() === "" && !idRef.current) return;
       const draft = {
         client_request_id: requestRef.current,
         raw_text: value,
-        session_date: today(),
+        session_date: dateRef.current,
         day_label: "",
         note_id: idRef.current ?? undefined,
       };
@@ -69,7 +77,7 @@ export function NotesScreen() {
             body: JSON.stringify({
               client_request_id: requestRef.current,
               raw_text: value,
-              session_date: today(),
+              session_date: dateRef.current,
               day_label: "",
               defer_parse: true,
             }),
@@ -101,14 +109,14 @@ export function NotesScreen() {
   const parseCurrent = useCallback(async (current: string) => {
     const auth = tokenRef.current;
     const id = idRef.current;
-    if (!auth || !id || current.trim() === "") return;
+    if (!auth || !id || many.current || current.trim() === "" || current.length > PARSE_LIMIT) return;
     if (parsedRef.current === current) return;
     if (textRef.current !== current) return;
     try {
       await api(`/notes/${id}/parse`, auth, { method: "POST" });
       if (textRef.current === current) parsedRef.current = current;
     } catch {
-      // Today keeps showing the unread note. The next pause tries again.
+      // The note stays on screen. The next pause tries again.
     }
   }, []);
 
@@ -117,6 +125,7 @@ export function NotesScreen() {
   }, [token]);
 
   const schedule = useCallback((current: string) => {
+    if (many.current) return;
     if (timer.current) clearTimeout(timer.current);
     if (parseTimer.current) clearTimeout(parseTimer.current);
     timer.current = setTimeout(() => {
@@ -134,11 +143,28 @@ export function NotesScreen() {
     writeDraft({
       client_request_id: requestRef.current,
       raw_text: value,
-      session_date: today(),
+      session_date: dateRef.current,
       day_label: "",
       note_id: idRef.current ?? undefined,
     });
     schedule(value);
+  }
+
+  function show(note: Note, value: string) {
+    idRef.current = note.id;
+    dateRef.current = note.session_date || today();
+    if (note.client_request_id) requestRef.current = note.client_request_id;
+    parsedRef.current = note.parse_status === "done" ? value : null;
+    savedRef.current = value;
+    textRef.current = value;
+    setText(value);
+    writeDraft({
+      client_request_id: requestRef.current,
+      raw_text: value,
+      session_date: dateRef.current,
+      day_label: "",
+      note_id: note.id,
+    });
   }
 
   useEffect(() => {
@@ -151,36 +177,59 @@ export function NotesScreen() {
   }, [parseCurrent, persist]);
 
   useEffect(() => {
+    if (!text || placed.current) return;
+    let stop = false;
+    const jump = () => {
+      if (stop || typeof document === "undefined") return;
+      const area = document.querySelector("textarea");
+      if (!(area instanceof HTMLTextAreaElement) || area.scrollHeight <= area.clientHeight + 8) return;
+      area.scrollTop = area.scrollHeight;
+      placed.current = true;
+    };
+    const timers = [0, 80, 300, 800].map((ms) => setTimeout(jump, ms));
+    return () => {
+      stop = true;
+      timers.forEach(clearTimeout);
+    };
+  }, [text]);
+
+  useEffect(() => {
     if (!token) return;
     let cancel = false;
     api<Note[]>("/notes", token)
-      .then((rows) => {
+      .then((incoming) => {
         if (cancel) return;
         loaded.current = true;
-        const note = newest(rows.filter((item) => item.session_date === today()));
-        if (!note) {
+        const rows = ordered(incoming);
+        if (rows.length === 0) {
           if (textRef.current.trim() !== "") schedule(textRef.current);
           return;
         }
-        idRef.current = note.id;
-        if (note.client_request_id) requestRef.current = note.client_request_id;
-        if (note.parse_status === "done") parsedRef.current = note.raw_text;
+        if (rows.length > 1) {
+          many.current = true;
+          const joined = asOneNote(rows);
+          savedRef.current = joined;
+          textRef.current = joined;
+          setText(joined);
+          return;
+        }
+        many.current = false;
+        const note = rows[0];
+        const stored = readDraft();
         const local = textRef.current;
-        const sameNote = opening?.note_id === note.id;
-        if (typed.current || (sameNote && local !== note.raw_text)) {
+        if (typed.current && local.trim() !== "" && local.length > note.raw_text.length / 2) {
+          idRef.current = note.id;
+          dateRef.current = note.session_date || today();
+          if (note.client_request_id) requestRef.current = note.client_request_id;
           schedule(local);
           return;
         }
-        textRef.current = note.raw_text;
-        savedRef.current = note.raw_text;
-        setText(note.raw_text);
-        writeDraft({
-          client_request_id: requestRef.current,
-          raw_text: note.raw_text,
-          session_date: today(),
-          day_label: "",
-          note_id: note.id,
-        });
+        if (stored?.note_id === note.id && stored.raw_text.trim() !== "" && stored.raw_text !== note.raw_text) {
+          show(note, stored.raw_text);
+          schedule(stored.raw_text);
+          return;
+        }
+        show(note, note.raw_text);
         if (note.parse_status !== "done" && note.raw_text.trim() !== "") schedule(note.raw_text);
       })
       .catch(() => {
@@ -191,11 +240,12 @@ export function NotesScreen() {
     return () => {
       cancel = true;
     };
-  }, [opening?.note_id, schedule, token]);
+  }, [schedule, token]);
 
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: theme.background }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <TextInput
+        ref={inputRef}
         accessibilityLabel="Notes"
         autoFocus
         multiline

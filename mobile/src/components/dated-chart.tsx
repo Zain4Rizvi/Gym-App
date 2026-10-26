@@ -1,172 +1,181 @@
-import Svg, { Circle, Line, Polyline, Text as SvgText } from "react-native-svg";
+import { View } from "react-native";
+import Svg, { Circle, G, Line, Polyline, Text as SvgText } from "react-native-svg";
 
+import { ThemedText } from "@/components/themed-text";
+import { Spacing } from "@/constants/theme";
 import { useTheme } from "@/hooks/use-theme";
-import { shortDate } from "@/utils/date";
-import { figure } from "@/utils/figures";
 
-const WIDTH = 340;
-const HEIGHT = 200;
-const LEFT = 52;
-const RIGHT = 52;
-const TOP = 18;
-const BOTTOM = 28;
+const WIDTH = 360;
+const HEIGHT = 232;
+const LEFT = 48;
+const RIGHT = 14;
+const TOP = 14;
+const BOTTOM = 32;
+const DAY = 86400000;
 
 export type DatedPoint = { date: string; value: number };
+export type DatedSeries = { label: string; color: string; points: DatedPoint[] };
 
-function bounds(values: number[]): [number, number] {
+function time(iso: string): number {
+  const [year, month, day] = iso.split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+function niceStep(span: number): number {
+  const rough = Math.max(span, 1e-6) / 4;
+  const pow = 10 ** Math.floor(Math.log10(rough));
+  const fraction = rough / pow;
+  const nice = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+  return nice * pow;
+}
+
+function scale(values: number[]): { low: number; high: number; ticks: number[] } {
   const min = Math.min(...values);
   const max = Math.max(...values);
-  if (min === max) return [min - 1, max + 1];
-  const pad = (max - min) * 0.15;
-  return [min - pad, max + pad];
+  const step = niceStep(max === min ? 2 : max - min);
+  const low = Math.floor(min / step) * step;
+  const high = Math.max(low + step, Math.ceil(max / step) * step);
+  const count = Math.round((high - low) / step);
+  const ticks = Array.from({ length: count + 1 }, (_, index) => Math.round((low + index * step) * 1000) / 1000);
+  return { low, high, ticks };
 }
 
-function xAt(index: number, count: number): number {
-  if (count <= 1) return LEFT + (WIDTH - LEFT - RIGHT) / 2;
-  return LEFT + (index / (count - 1)) * (WIDTH - LEFT - RIGHT);
+function xLabels(start: number, end: number): number[] {
+  if (end <= start) return [start];
+  const slots = end - start > 180 * DAY ? 3 : 4;
+  return Array.from({ length: slots }, (_, index) => start + ((end - start) * index) / (slots - 1));
 }
 
-function yAt(value: number, min: number, max: number): number {
-  const span = max - min || 1;
-  return TOP + (1 - (value - min) / span) * (HEIGHT - TOP - BOTTOM);
-}
-
-function marked(count: number): number[] {
-  if (count <= 1) return [0];
-  const chosen = [0];
-  for (let index = 1; index < count; index += 1) {
-    const previous = xAt(chosen[chosen.length - 1], count);
-    const x = xAt(index, count);
-    const last = index === count - 1;
-    if (last) {
-      if (x - previous < 52 && chosen.length > 1) chosen.pop();
-      chosen.push(index);
-    } else if (x - previous >= 56 && xAt(count - 1, count) - x >= 56) {
-      chosen.push(index);
-    }
+function dateLabel(stamp: number, start: number, end: number, edge: boolean): string {
+  const value = new Date(stamp);
+  const month = value.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" });
+  const day = value.getUTCDate();
+  const year = value.getUTCFullYear();
+  if (edge || end - start > 180 * DAY) {
+    return edge ? `${month} ${day}, ${year}` : `${month} ${year}`;
   }
-  return chosen;
+  return `${month} ${day}`;
 }
 
-function line(values: (number | null)[], count: number, min: number, max: number): string[] {
-  const parts: string[] = [];
-  let current: string[] = [];
-  values.forEach((value, index) => {
-    if (value == null) {
-      if (current.length > 1) parts.push(current.join(" "));
-      current = [];
-      return;
-    }
-    current.push(`${xAt(index, count).toFixed(1)},${yAt(value, min, max).toFixed(1)}`);
-  });
-  if (current.length > 1) parts.push(current.join(" "));
-  return parts;
+function yAt(value: number, low: number, high: number): number {
+  const span = high - low || 1;
+  return TOP + (1 - (value - low) / span) * (HEIGHT - TOP - BOTTOM);
 }
 
-export function DatedChart({
-  points,
-  relative,
-}: {
-  points: DatedPoint[];
-  relative: (number | null)[];
-}) {
+function xAt(stamp: number, start: number, end: number): number {
+  const width = WIDTH - LEFT - RIGHT;
+  if (end <= start) return LEFT + width / 2;
+  return LEFT + ((stamp - start) / (end - start)) * width;
+}
+
+function tickText(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
+}
+
+function ordered(points: DatedPoint[]): DatedPoint[] {
+  return [...points].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+export function DatedChart({ series }: { series: DatedSeries[] }) {
   const theme = useTheme();
-  const count = points.length;
-  if (count === 0) return null;
-  const [low, high] = bounds(points.map((point) => point.value));
-  const ratios = relative.filter((value): value is number => value != null);
-  const ratioScale = ratios.length > 0 ? bounds(ratios) : null;
-  const labels = marked(count);
-  const plotBottom = HEIGHT - BOTTOM;
+  const drawn = series
+    .map((item) => ({ ...item, points: ordered(item.points) }))
+    .filter((item) => item.points.length > 0);
+  const flat = drawn.flatMap((item) => item.points);
+  if (flat.length === 0) return null;
+  const stamps = flat.map((point) => time(point.date));
+  const start = Math.min(...stamps);
+  const end = Math.max(...stamps);
+  const { low, high, ticks } = scale(flat.map((point) => point.value));
+  const labels = xLabels(start, end);
 
   return (
-    <Svg width="100%" height={HEIGHT} viewBox={`0 0 ${WIDTH} ${HEIGHT}`}>
-      <Line x1={LEFT} y1={plotBottom} x2={WIDTH - RIGHT} y2={plotBottom} stroke={theme.separator} strokeWidth={1} />
-      <SvgText x={8} y={TOP + 4} fill={theme.accent} fontSize={11}>
-        {figure(high, 0)}
-      </SvgText>
-      <SvgText x={8} y={plotBottom} fill={theme.accent} fontSize={11}>
-        {figure(low, 0)}
-      </SvgText>
-      {ratioScale ? (
-        <>
-          <SvgText x={WIDTH - 8} y={TOP + 4} fill={theme.textSecondary} fontSize={11} textAnchor="end">
-            {figure(ratioScale[1], 2)}
+    <View style={{ gap: Spacing.two }}>
+      <View style={{ flexDirection: "row", gap: Spacing.three }}>
+        {drawn.map((item) => (
+          <ThemedText key={item.label} type="small" style={{ color: item.color }}>
+            {item.label}
+          </ThemedText>
+        ))}
+        <ThemedText type="small" themeColor="textSecondary">
+          lb
+        </ThemedText>
+      </View>
+      <Svg width="100%" height={HEIGHT} viewBox={`0 0 ${WIDTH} ${HEIGHT}`}>
+        {ticks.map((tick) => (
+          <Line
+            key={tick}
+            x1={LEFT}
+            y1={yAt(tick, low, high)}
+            x2={WIDTH - RIGHT}
+            y2={yAt(tick, low, high)}
+            stroke={theme.separator}
+            strokeWidth={1}
+          />
+        ))}
+        {ticks.map((tick) => (
+          <SvgText
+            key={`label-${tick}`}
+            x={LEFT - 8}
+            y={yAt(tick, low, high) + 4}
+            fill={theme.textSecondary}
+            fontSize={12}
+            textAnchor="end">
+            {tickText(tick)}
           </SvgText>
-          <SvgText x={WIDTH - 8} y={plotBottom} fill={theme.textSecondary} fontSize={11} textAnchor="end">
-            {figure(ratioScale[0], 2)}
-          </SvgText>
-        </>
-      ) : null}
-      {ratioScale
-        ? line(relative, count, ratioScale[0], ratioScale[1]).map((pointsText) => (
+        ))}
+        {drawn.map((item, index) => {
+          if (item.points.length < 2) return null;
+          const points = item.points
+            .map((point) => `${xAt(time(point.date), start, end).toFixed(1)},${yAt(point.value, low, high).toFixed(1)}`)
+            .join(" ");
+          return (
             <Polyline
-              key={`relative-${pointsText}`}
-              points={pointsText}
+              key={item.label}
+              points={points}
               fill="none"
-              stroke="#7AA2FF"
-              strokeWidth={1.5}
+              stroke={item.color}
+              strokeWidth={index === 0 ? 2.25 : 1.5}
               strokeLinejoin="round"
               strokeLinecap="round"
             />
-          ))
-        : null}
-      {line(
-        points.map((point) => point.value),
-        count,
-        low,
-        high,
-      ).map((pointsText) => (
-        <Polyline
-          key={`lift-${pointsText}`}
-          points={pointsText}
-          fill="none"
-          stroke={theme.accent}
-          strokeWidth={2}
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-      ))}
-      {points.map((point, index) => {
-        const x = xAt(index, count);
-        const y = yAt(point.value, low, high);
-        const show = labels.includes(index);
-        return (
-          <Circle key={point.date} cx={x} cy={y} r={show ? 3.5 : 2.5} fill={theme.accent} />
-        );
-      })}
-      {labels.map((index) => {
-        const point = points[index];
-        const x = xAt(index, count);
-        const y = yAt(point.value, low, high);
-        const above = y > TOP + 18;
-        const first = index === 0;
-        const last = index === count - 1;
-        const anchor = first ? "start" : last ? "end" : "middle";
-        const labelX = first ? x + 6 : last ? x - 6 : x;
-        return (
-          <SvgText
-            key={`${point.date}-value`}
-            x={labelX}
-            y={above ? y - 8 : y + 14}
-            fill={theme.text}
-            fontSize={11}
-            textAnchor={anchor}>
-            {figure(point.value)}
-          </SvgText>
-        );
-      })}
-      {labels.map((index) => (
-        <SvgText
-          key={`${points[index].date}-date`}
-          x={xAt(index, count)}
-          y={HEIGHT - 12}
-          fill={theme.textSecondary}
-          fontSize={11}
-          textAnchor="middle">
-          {shortDate(points[index].date)}
-        </SvgText>
-      ))}
-    </Svg>
+          );
+        })}
+        {drawn.map((item) => {
+          const last = item.points[item.points.length - 1];
+          const cx = xAt(time(last.date), start, end);
+          const cy = yAt(last.value, low, high);
+          const lower = drawn.some((other) => {
+            if (other === item) return false;
+            const endPoint = other.points[other.points.length - 1];
+            return yAt(endPoint.value, low, high) < cy;
+          });
+          const labelY = lower ? Math.min(cy + 14, HEIGHT - BOTTOM - 2) : Math.max(cy - 8, 12);
+          return (
+            <G key={`${item.label}-last`}>
+              <Circle cx={cx} cy={cy} r={4} fill={item.color} />
+              <SvgText x={cx - 6} y={labelY} fill={item.color} fontSize={12} textAnchor="end">
+                {tickText(last.value)}
+              </SvgText>
+            </G>
+          );
+        })}
+        {labels.map((stamp, index) => {
+          const first = index === 0;
+          const last = index === labels.length - 1;
+          return (
+            <SvgText
+              key={stamp}
+              x={first ? LEFT : last ? WIDTH - RIGHT : xAt(stamp, start, end)}
+              y={HEIGHT - 8}
+              fill={theme.textSecondary}
+              fontSize={12}
+              textAnchor={first ? "start" : last ? "end" : "middle"}>
+              {dateLabel(stamp, start, end, first || last)}
+            </SvgText>
+          );
+        })}
+      </Svg>
+    </View>
   );
 }

@@ -46,7 +46,7 @@ export function LoginScreen() {
       }}>
       <View style={{ gap: Spacing.two }}>
         <ThemedText type="title">The note is the record.</ThemedText>
-        <ThemedText themeColor="textSecondary">Eight weeks are already in the book. Write today’s on top of it.</ThemedText>
+        <ThemedText themeColor="textSecondary">The log is one note. Write the next day at the end.</ThemedText>
       </View>
       {error ? (
         <ThemedText selectable style={{ color: theme.danger }}>

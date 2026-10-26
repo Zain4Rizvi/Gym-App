@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import date
 from pathlib import Path
@@ -22,7 +23,23 @@ DEMO_EMAIL = "ava@demo.local"
 DEMO_PASSWORD = "demo"
 DEMO_NAME = "Ava"
 DEMO_HEIGHT = 68
-SEED_MARK = "lifts-txt-v2-"
+
+
+def _mark(text: str) -> str:
+    digest = hashlib.sha256(text.encode()).hexdigest()[:12]
+    return f"lifts-txt-1-{digest}-"
+
+
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _written(iso: str) -> str:
+    year, month, day = (int(part) for part in iso.split("-"))
+    return f"{_MONTHS[month - 1]} {day}, {year}"
+
+
+def _document(sessions: list[dict]) -> str:
+    return "\n\n".join(f"{_written(session['date'])}\n{session['text']}" for session in sessions)
 
 _CACHE: dict[str, dict[str, list[dict[str, str]]]] = {}
 
@@ -37,7 +54,7 @@ def lifts_path() -> Path:
 
 def build_demo_book(today: date | None = None) -> Book:
     text = lifts_path().read_text(encoding="utf-8")
-    key = str(len(text))
+    key = _mark(text)
     cached = _CACHE.get(key)
     if cached is None:
         cached = _snapshot(_book_from_log(text))
@@ -48,16 +65,17 @@ def build_demo_book(today: date | None = None) -> Book:
     return book
 
 
-def _imported(book_id: str) -> bool:
+def _imported(book_id: str, mark: str) -> bool:
     if not _book_path(book_id).is_file():
         return False
     book = load_local_book(book_id)
-    return any(row.get("client_request_id", "").startswith(SEED_MARK) for row in book["Notes"])
+    return any(row.get("client_request_id", "").startswith(mark) for row in book["Notes"])
 
 
 def ensure_demo(today: date | None = None) -> None:
     account = _ensure_account()
-    if _imported(account["id"]):
+    text = lifts_path().read_text(encoding="utf-8")
+    if _imported(account["id"], _mark(text)):
         return
     save_local_book(account["id"], build_demo_book(today or date.today()))
 
@@ -106,15 +124,19 @@ def _row(book: Book, tab: str, fields: dict) -> dict[str, str]:
 
 def _book_from_log(text: str) -> Book:
     book = Book()
+    mark = _mark(text)
+    sessions = parse_log(text)
+    if not sessions:
+        return book
+    note = _row(book, "Notes", {
+        "session_date": sessions[-1]["date"],
+        "day_label": "",
+        "raw_text": _document(sessions),
+        "client_request_id": f"{mark}0",
+        "parse_status": "done",
+    })
     ids: dict[str, str] = {}
-    for index, session in enumerate(parse_log(text)):
-        note = _row(book, "Notes", {
-            "session_date": session["date"],
-            "day_label": session["label"],
-            "raw_text": session["text"],
-            "client_request_id": f"{SEED_MARK}{index}",
-            "parse_status": "done",
-        })
+    for session in sessions:
         workout = _row(book, "Sessions", {
             "date": session["date"],
             "label": session["label"],

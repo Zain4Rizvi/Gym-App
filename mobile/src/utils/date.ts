@@ -19,6 +19,16 @@ export function shortDate(iso: string): string {
   return new Date(year, month - 1, day).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+export function mediumDate(iso: string): string {
+  if (!DATE_RE.test(iso)) return iso;
+  const [year, month, day] = iso.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export function today(): string {
   const now = new Date();
   const month = String(now.getMonth() + 1).padStart(2, "0");
